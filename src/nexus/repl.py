@@ -394,7 +394,8 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
     Uses oracle.stream_events() → tagged dicts (token / tool_call / tool_result
     / final), falls back to oracle.stream() if the event API isn't present.
     """
-    final_text = ""
+    final_text = ""               # full concatenation for session log
+    current_segment = ""          # only the chunk currently inside Live
     live: Live | None = None
     shown_first_text = False
     thinking: Thinking | None = None
@@ -435,13 +436,19 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                 pass
 
         def _close_live():
-            nonlocal live
+            """Close the current Live and reset the per-segment buffer.
+
+            final_text keeps accumulating (for session log + final frame);
+            current_segment resets so the next Live only re-renders new tokens.
+            """
+            nonlocal live, current_segment
             if live is not None:
                 try:
                     live.__exit__(None, None, None)
                 except Exception:
                     pass
                 live = None
+            current_segment = ""
 
         if use_events:
             for evt in oracle.stream_events(prompt):
@@ -487,16 +494,16 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                     chunk = evt.get("text", "")
                     if not chunk:
                         continue
+                    final_text += chunk
+                    current_segment += chunk
                     if live is None:
-                        # Either first text ever, OR text resumed after a tool
-                        # round-trip interrupted the previous Live. Either way:
-                        # kill the spinner and open a fresh Live.
+                        # First text after a tool round-trip (or very first
+                        # token of the turn). Spinner down, fresh Live that
+                        # only renders THIS segment — the prior segment was
+                        # already committed to the scrollback.
                         _pause_spinner()
-                        # Append to final_text, not overwrite — multi-step
-                        # responses concatenate naturally.
-                        final_text += chunk
                         live = Live(
-                            Markdown(final_text + " ▋", code_theme="monokai"),
+                            Markdown(current_segment + " ▋", code_theme="monokai"),
                             console=console,
                             refresh_per_second=15,
                             vertical_overflow="visible",
@@ -504,13 +511,14 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                         live.__enter__()
                         shown_first_text = True
                     else:
-                        final_text += chunk
-                        live.update(Markdown(final_text + " ▋", code_theme="monokai"))
+                        live.update(Markdown(current_segment + " ▋", code_theme="monokai"))
 
                 elif t == "final":
-                    # Drop the typing cursor from the final frame.
-                    if live is not None and final_text:
-                        live.update(Markdown(final_text, code_theme="monokai"))
+                    # Drop the typing cursor from the final frame of the
+                    # active segment. final_text is the authoritative full
+                    # response (for session log + agent memory).
+                    if live is not None and current_segment:
+                        live.update(Markdown(current_segment, code_theme="monokai"))
                     # If the whole answer came through a non-streaming path
                     # (no `token` events), render it now.
                     elif not shown_first_text and evt.get("text"):
