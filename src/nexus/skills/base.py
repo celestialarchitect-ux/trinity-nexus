@@ -114,12 +114,16 @@ def llm_complete(
     temperature: float = 0.3,
     max_tokens: int = 1024,
     think: bool = False,
+    format: str | dict | None = None,
 ) -> str:
     """Common helper: call the LLM via Ollama and return text.
 
     `think=False` disables chain-of-thought on thinking-capable models (qwen3
     etc.), which keeps output tight and guarantees the requested schema fits
     inside `max_tokens`.
+
+    `format="json"` constrains output to valid JSON via Ollama's grammar mode.
+    Use when the skill needs structured output from a small quantized model.
     """
     import ollama
 
@@ -132,9 +136,24 @@ def llm_complete(
         ],
         options={"temperature": temperature, "num_predict": max_tokens},
     )
+    if format is not None:
+        kwargs["format"] = format
     # Ollama 0.4+ accepts think=False to suppress reasoning. Older servers ignore.
     try:
         r = client.chat(**kwargs, think=think)
     except TypeError:
         r = client.chat(**kwargs)
-    return r["message"]["content"]
+    content = r["message"]["content"] or ""
+    # qwen3 sometimes emits <think>...</think> even with think=False. Strip it
+    # so downstream parsers see only the final answer.
+    if "<think>" in content:
+        import re
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+        # Unclosed <think> at start (streaming truncation): drop everything up
+        # to the last </think>, or strip the whole opener if none closes.
+        if "<think>" in content:
+            if "</think>" in content:
+                content = content.split("</think>", 1)[1]
+            else:
+                content = content.split("<think>", 1)[0]
+    return content.strip()
