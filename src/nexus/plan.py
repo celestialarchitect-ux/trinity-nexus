@@ -119,12 +119,14 @@ def draft(intent: str, thread_id: str) -> Plan:
             "num_ctx": settings.oracle_num_ctx,
             "num_predict": 1200,
         },
+        format="json",
     )
     try:
         r = client.chat(**kw, think=False)
     except TypeError:
         r = client.chat(**kw)
-    raw = r["message"]["content"] or ""
+    from nexus._llm_util import strip_think
+    raw = strip_think(r["message"]["content"])
     obj = _extract_json(raw)
     tasks = [
         PlanTask(id=str(uuid.uuid4())[:8], description=str(t.get("description", "")).strip())

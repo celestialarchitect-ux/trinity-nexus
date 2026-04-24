@@ -122,7 +122,8 @@ class Teacher:
             r = client.chat(**kw, think=False)
         except TypeError:
             r = client.chat(**kw)
-        return r["message"]["content"] or ""
+        from nexus._llm_util import strip_think
+        return strip_think(r["message"]["content"])
 
     def call(self, system: str, prompt: str) -> str:
         fn = {

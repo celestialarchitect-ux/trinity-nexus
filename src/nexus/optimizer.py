@@ -80,12 +80,14 @@ def _propose_variations(section_body: str, *, n: int, model: str | None = None) 
             {"role": "user", "content": f"ORIGINAL:\n{section_body}\n\nReturn JSON only."},
         ],
         options={"temperature": 0.5, "num_predict": 3000, "num_ctx": settings.oracle_num_ctx},
+        format="json",
     )
     try:
         r = client.chat(**kw, think=False)
     except TypeError:
         r = client.chat(**kw)
-    raw = (r["message"]["content"] or "").strip()
+    from nexus._llm_util import strip_think
+    raw = strip_think(r["message"]["content"])
     s = raw.find("{")
     e = raw.rfind("}")
     if s < 0 or e <= s:
@@ -118,7 +120,8 @@ def _score_with_constitution(constitution: str) -> tuple[float, float, float]:
             r = client.chat(**kw, think=False)
         except TypeError:
             r = client.chat(**kw)
-        return r["message"]["content"] or ""
+        from nexus._llm_util import strip_think
+        return strip_think(r["message"]["content"])
 
     # Baseline == candidate for h2h (we're not comparing two prompts here; we
     # just need a stable baseline_fn signature). Improvement score will be ~0.

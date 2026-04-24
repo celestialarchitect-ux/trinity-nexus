@@ -77,17 +77,8 @@ def _chat(client: ollama.Client, *, system: str, prompt: str, max_tokens: int = 
         r = client.chat(**kw, think=False)
     except TypeError:
         r = client.chat(**kw)
-    content = r["message"]["content"] or ""
-    # qwen3 sometimes wraps output in <think>...</think> even with think=False.
-    if "<think>" in content:
-        import re
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
-        if "<think>" in content:
-            if "</think>" in content:
-                content = content.split("</think>", 1)[1]
-            else:
-                content = content.split("<think>", 1)[0]
-    return content.strip()
+    from nexus._llm_util import strip_think
+    return strip_think(r["message"]["content"])
 
 
 def _parse(raw: str) -> dict:

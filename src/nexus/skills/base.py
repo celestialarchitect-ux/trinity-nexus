@@ -143,20 +143,8 @@ def llm_complete(
         r = client.chat(**kwargs, think=think)
     except TypeError:
         r = client.chat(**kwargs)
-    content = r["message"]["content"] or ""
-    # qwen3 sometimes emits <think>...</think> even with think=False. Strip it
-    # so downstream parsers see only the final answer.
-    if "<think>" in content:
-        import re
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
-        # Unclosed <think> at start (streaming truncation): drop everything up
-        # to the last </think>, or strip the whole opener if none closes.
-        if "<think>" in content:
-            if "</think>" in content:
-                content = content.split("</think>", 1)[1]
-            else:
-                content = content.split("<think>", 1)[0]
-    return content.strip()
+    from nexus._llm_util import strip_think
+    return strip_think(r["message"]["content"])
 
 
 def llm_json(

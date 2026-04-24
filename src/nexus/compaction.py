@@ -82,7 +82,8 @@ def compact(thread_id: str, *, keep_recent: int = 10) -> dict:
         r = client.chat(**kw, think=False)
     except TypeError:
         r = client.chat(**kw)
-    summary = (r["message"]["content"] or "").strip()
+    from nexus._llm_util import strip_think
+    summary = strip_think(r["message"]["content"])
     if not summary:
         return {"ok": False, "reason": "empty summary"}
 

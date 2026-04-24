@@ -171,7 +171,8 @@ def run(task: str, *, max_iterations: int = 6, model: str | None = None) -> Code
             r = client.chat(**kw, think=False)
         except TypeError:
             r = client.chat(**kw)
-        assistant = (r["message"]["content"] or "").strip()
+        from nexus._llm_util import strip_think
+        assistant = strip_think(r["message"]["content"])
         history.append({"role": "assistant", "content": assistant})
 
         final_block = _extract_block("final", assistant)

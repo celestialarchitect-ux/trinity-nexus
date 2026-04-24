@@ -95,12 +95,14 @@ def _extract(text: str, model: str | None = None) -> list[dict]:
                 {"role": "user", "content": f"TURN:\n{text[:2000]}\n\nReturn JSON only."},
             ],
             options={"temperature": 0.1, "num_predict": 600, "num_ctx": 2048},
+            format="json",
         )
         try:
             r = client.chat(**kw, think=False)
         except TypeError:
             r = client.chat(**kw)
-        raw = (r["message"]["content"] or "").strip()
+        from nexus._llm_util import strip_think
+        raw = strip_think(r["message"]["content"])
         s = raw.find("{")
         e = raw.rfind("}")
         if s < 0 or e <= s:
