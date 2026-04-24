@@ -13,7 +13,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, TypedDict
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -136,18 +142,19 @@ class Oracle:
         return [sys_msg, HumanMessage(content=prompt)]
 
     def ask(self, prompt: str) -> str:
-        self.memory.log_turn(
-            role="user", content=prompt, thread_id=self.thread_id
-        )
+        from nexus import sessions as _sessions
+
+        self.memory.log_turn(role="user", content=prompt, thread_id=self.thread_id)
+        _sessions.log(self.thread_id, "user", content=prompt)
+
         final = self.graph.invoke(
             {"messages": self._seed_messages(prompt)}, self.config
         )
         last = final["messages"][-1]
         answer = last.content if isinstance(last, AIMessage) else str(last)
 
-        self.memory.log_turn(
-            role="assistant", content=answer, thread_id=self.thread_id
-        )
+        self.memory.log_turn(role="assistant", content=answer, thread_id=self.thread_id)
+        _sessions.log(self.thread_id, "assistant", content=answer)
         self.collector.log_turn(
             intent=prompt,
             response=answer,
@@ -156,9 +163,12 @@ class Oracle:
         return answer
 
     def stream(self, prompt: str):
-        self.memory.log_turn(
-            role="user", content=prompt, thread_id=self.thread_id
-        )
+        """Back-compat: yields whole BaseMessages. Prefer stream_events()."""
+        from nexus import sessions as _sessions
+
+        self.memory.log_turn(role="user", content=prompt, thread_id=self.thread_id)
+        _sessions.log(self.thread_id, "user", content=prompt)
+
         last_text = ""
         for event in self.graph.stream(
             {"messages": self._seed_messages(prompt)},
@@ -176,9 +186,117 @@ class Oracle:
             self.memory.log_turn(
                 role="assistant", content=last_text, thread_id=self.thread_id
             )
+            _sessions.log(self.thread_id, "assistant", content=last_text)
             self.collector.log_turn(
                 intent=prompt,
                 response=last_text,
+                thread_id=self.thread_id,
+            )
+
+    def stream_events(self, prompt: str):
+        """Token-level streaming with tagged events.
+
+        Yields dicts with a 'type' field:
+          {"type": "token",       "text": str}          # incremental AI content
+          {"type": "tool_call",   "name": str, "args": dict, "id": str}
+          {"type": "tool_result", "name": str, "content": str, "id": str}
+          {"type": "final",       "text": str}          # the complete assistant answer
+
+        Uses LangGraph's multi-mode stream: `messages` for token chunks,
+        `updates` for node transitions (tool calls + tool results).
+        """
+        from nexus import sessions as _sessions
+
+        self.memory.log_turn(role="user", content=prompt, thread_id=self.thread_id)
+        _sessions.log(self.thread_id, "user", content=prompt)
+
+        final_text = ""
+        seen_tool_call_ids: set[str] = set()
+
+        # Multi-mode stream: each event is (mode, payload)
+        stream = self.graph.stream(
+            {"messages": self._seed_messages(prompt)},
+            self.config,
+            stream_mode=["messages", "updates"],
+        )
+        for mode, payload in stream:
+            if mode == "messages":
+                # payload = (AIMessageChunk|str, metadata_dict)
+                chunk = payload[0] if isinstance(payload, tuple) else payload
+                text = getattr(chunk, "content", None)
+                if isinstance(text, list):
+                    text = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in text)
+                if text:
+                    final_text += text
+                    yield {"type": "token", "text": text}
+                # tool calls arrive in chunks as well — emit once per id
+                for tc in getattr(chunk, "tool_calls", None) or []:
+                    tid = tc.get("id") or tc.get("name", "")
+                    if tid and tid not in seen_tool_call_ids and tc.get("name"):
+                        seen_tool_call_ids.add(tid)
+                        yield {
+                            "type": "tool_call",
+                            "name": tc.get("name"),
+                            "args": tc.get("args") or {},
+                            "id": tid,
+                        }
+                        _sessions.log(
+                            self.thread_id,
+                            "tool_call",
+                            name=tc.get("name"),
+                            args=tc.get("args") or {},
+                        )
+
+            elif mode == "updates":
+                # payload = {node_name: state_dict}
+                for _node, state in payload.items():
+                    msgs = state.get("messages", []) if isinstance(state, dict) else []
+                    for m in msgs:
+                        if isinstance(m, ToolMessage):
+                            content = getattr(m, "content", "") or ""
+                            if isinstance(content, list):
+                                content = " ".join(str(c) for c in content)
+                            yield {
+                                "type": "tool_result",
+                                "name": getattr(m, "name", None) or "",
+                                "content": str(content),
+                                "id": getattr(m, "tool_call_id", "") or "",
+                            }
+                            _sessions.log(
+                                self.thread_id,
+                                "tool_result",
+                                name=getattr(m, "name", ""),
+                                content=str(content)[:2000],
+                            )
+                        elif isinstance(m, AIMessage):
+                            # Catch tool_calls that didn't come through the
+                            # `messages` stream (e.g. non-streaming LLM nodes).
+                            for tc in getattr(m, "tool_calls", None) or []:
+                                tid = tc.get("id") or tc.get("name", "")
+                                if tid and tid not in seen_tool_call_ids and tc.get("name"):
+                                    seen_tool_call_ids.add(tid)
+                                    yield {
+                                        "type": "tool_call",
+                                        "name": tc.get("name"),
+                                        "args": tc.get("args") or {},
+                                        "id": tid,
+                                    }
+                                    _sessions.log(
+                                        self.thread_id,
+                                        "tool_call",
+                                        name=tc.get("name"),
+                                        args=tc.get("args") or {},
+                                    )
+
+        yield {"type": "final", "text": final_text}
+        if final_text:
+            self.memory.log_turn(
+                role="assistant", content=final_text, thread_id=self.thread_id
+            )
+            _sessions.log(self.thread_id, "assistant", content=final_text)
+            self.collector.log_turn(
+                intent=prompt,
+                response=final_text,
                 thread_id=self.thread_id,
             )
 

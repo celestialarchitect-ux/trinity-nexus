@@ -101,61 +101,124 @@ def _condense_tool_result(content: str) -> str:
 
 
 def _stream_answer(oracle, prompt: str, console: Console) -> str:
+    """Token-by-token streaming Claude-Code-style, with esoteric thinking verbs.
+
+    Uses oracle.stream_events() → tagged dicts (token / tool_call / tool_result
+    / final), falls back to oracle.stream() if the event API isn't present.
+    """
     final_text = ""
-    seen_tool_ids: set[str] = set()
+    live: Live | None = None
     shown_first_text = False
+    thinking: Thinking | None = None
 
     _hooks.run("pre_prompt", {"prompt": prompt, "thread": oracle.thread_id})
 
-    with Thinking(console) as thinking:
-        live: Live | None = None
-        try:
+    # Use the new event API if available
+    use_events = hasattr(oracle, "stream_events")
+
+    try:
+        thinking = Thinking(console).__enter__()
+
+        if use_events:
+            for evt in oracle.stream_events(prompt):
+                t = evt.get("type")
+                if t == "tool_call":
+                    thinking.pause()
+                    console.print(
+                        f"[bold #b23bf2]✦[/] [dim]{_tool_call_line(evt['name'], evt.get('args', {}))}[/]"
+                    )
+                    _hooks.run("pre_tool", {"name": evt["name"], "args": evt.get("args")})
+                    thinking.resume(verb="Invoking")
+                elif t == "tool_result":
+                    thinking.pause()
+                    console.print(
+                        f"  [dim]⎿[/] [dim]{_condense_tool_result(evt.get('content', ''))}[/]"
+                    )
+                    _hooks.run("post_tool", {"content": evt.get("content", "")[:2000]})
+                    thinking.resume(verb="Receiving")
+                elif t == "token":
+                    chunk = evt.get("text", "")
+                    if not chunk:
+                        continue
+                    if not shown_first_text:
+                        thinking.pause()
+                        thinking = None
+                        shown_first_text = True
+                        final_text = chunk
+                        live = Live(
+                            Markdown(final_text), console=console, refresh_per_second=12
+                        )
+                        live.__enter__()
+                    else:
+                        final_text += chunk
+                        if live is not None:
+                            live.update(Markdown(final_text))
+                elif t == "final":
+                    # If the whole answer came through a non-streaming path
+                    # (no `token` events), render it now.
+                    if not shown_first_text and evt.get("text"):
+                        if thinking is not None:
+                            thinking.pause()
+                            thinking = None
+                        final_text = evt["text"]
+                        console.print(Markdown(final_text))
+        else:
+            # Fallback path (should be rare) — use the old message stream
+            seen: set[str] = set()
             for msg in oracle.stream(prompt):
                 if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
                     for tc in msg.tool_calls:
-                        tc_id = tc.get("id") or f"{tc.get('name')}-{len(seen_tool_ids)}"
-                        if tc_id in seen_tool_ids:
+                        tc_id = tc.get("id") or f"{tc.get('name')}-{len(seen)}"
+                        if tc_id in seen:
                             continue
-                        seen_tool_ids.add(tc_id)
-                        thinking.pause()
+                        seen.add(tc_id)
+                        if thinking:
+                            thinking.pause()
                         console.print(
                             f"[bold #b23bf2]✦[/] [dim]{_tool_call_line(tc.get('name', '?'), tc.get('args', {}))}[/]"
                         )
-                        _hooks.run("pre_tool", {"name": tc.get("name"), "args": tc.get("args")})
-                        thinking.resume(verb="Invoking")
-                    continue
-
-                if isinstance(msg, ToolMessage):
-                    content = (getattr(msg, "content", "") or "")
-                    if isinstance(content, list):
-                        content = " ".join(str(c) for c in content)
-                    thinking.pause()
-                    console.print(f"  [dim]⎿[/] [dim]{_condense_tool_result(str(content))}[/]")
-                    _hooks.run("post_tool", {"content": str(content)[:2000]})
-                    thinking.resume(verb="Receiving")
-                    continue
-
-                if isinstance(msg, AIMessage):
-                    text = (getattr(msg, "content", "") or "").strip()
-                    if not text or text == final_text:
-                        continue
-                    final_text = text
-                    if not shown_first_text:
+                        if thinking:
+                            thinking.resume(verb="Invoking")
+                elif isinstance(msg, ToolMessage):
+                    content = getattr(msg, "content", "") or ""
+                    if thinking:
                         thinking.pause()
-                        shown_first_text = True
-                        live = Live(Markdown(text), console=console, refresh_per_second=10)
-                        live.__enter__()
-                    else:
-                        if live is not None:
+                    console.print(
+                        f"  [dim]⎿[/] [dim]{_condense_tool_result(str(content))}[/]"
+                    )
+                    if thinking:
+                        thinking.resume(verb="Receiving")
+                elif isinstance(msg, AIMessage):
+                    text = (getattr(msg, "content", "") or "").strip()
+                    if text and text != final_text:
+                        final_text = text
+                        if not shown_first_text:
+                            if thinking:
+                                thinking.pause()
+                                thinking = None
+                            shown_first_text = True
+                            live = Live(
+                                Markdown(text), console=console, refresh_per_second=10
+                            )
+                            live.__enter__()
+                        elif live is not None:
                             live.update(Markdown(text))
-        finally:
-            if live is not None:
-                try:
-                    live.__exit__(None, None, None)
-                except Exception:
-                    pass
+    finally:
+        if live is not None:
+            try:
+                live.__exit__(None, None, None)
+            except Exception:
+                pass
+        if thinking is not None:
+            try:
+                thinking.stop()
+            except Exception:
+                pass
 
-    _hooks.run("post_response", {"response": final_text[:4000], "thread": oracle.thread_id})
+    _hooks.run(
+        "post_response",
+        {"response": final_text[:4000], "thread": oracle.thread_id},
+    )
     return final_text
 
 
