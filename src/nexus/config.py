@@ -1,15 +1,40 @@
-"""Central configuration. Pulls from .env via pydantic-settings."""
+"""Central configuration. Pulls from .env via pydantic-settings.
+
+Also loads .env into `os.environ` at import time so non-pydantic env reads
+(NEXUS_FRONTIER_*, NEXUS_BANNER, NEXUS_RECORD, NEXUS_HOOKS, etc.) see the
+values. Without this, .env would only populate the Settings object, not the
+process environment, and `os.environ.get('NEXUS_FRONTIER_API_KEY')` elsewhere
+would silently return None.
+"""
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Anchor .env to the repo root so `oracle` works from any CWD.
+# Anchor .env to the repo root so `nexus` works from any CWD.
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _PROJECT_ROOT / ".env"
+
+# Load .env into os.environ (never overwrite vars already present).
+if _ENV_FILE.exists():
+    try:
+        from dotenv import load_dotenv  # type: ignore
+
+        load_dotenv(_ENV_FILE, override=False)
+    except ImportError:
+        # Hand-rolled minimal .env parser as a fallback
+        for _line in _ENV_FILE.read_text(encoding="utf-8", errors="ignore").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _, _v = _line.partition("=")
+            _k, _v = _k.strip(), _v.strip().strip('"').strip("'")
+            if _k and _k not in os.environ:
+                os.environ[_k] = _v
 
 
 class Settings(BaseSettings):
