@@ -140,7 +140,8 @@ def _chat(
         r = client.chat(**kw, think=think)
     except TypeError:
         r = client.chat(**kw)
-    return r["message"]["content"] or ""
+    from nexus._llm_util import strip_think
+    return strip_think(r["message"]["content"])
 
 
 def regression_pass_rate(
