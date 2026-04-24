@@ -53,7 +53,9 @@ def test_namespace_includes_tools():
     from nexus.code_agent import _build_namespace
 
     ns = _build_namespace()
-    # a few canonical tools should be callable objects in the namespace
-    for name in ("read_file", "glob_paths", "grep_files", "web_search", "remember"):
+    # Canonical tools should be callable in the code-agent namespace.
+    # Tools are now exposed under Claude-Code-style names (Read, Write, etc.);
+    # extras keep their snake_case names.
+    for name in ("Read", "Glob", "Grep", "WebSearch", "remember"):
         assert name in ns, f"{name} missing from code-agent namespace"
         assert callable(ns[name])

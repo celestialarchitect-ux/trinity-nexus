@@ -171,7 +171,7 @@ def _is_dangerous(cmd: str) -> str | None:
     return None
 
 
-@tool
+@tool("Bash")
 def run_command(command: str, timeout_sec: int = 30) -> dict[str, Any]:
     """Run a shell command. Use for "run/execute/test/install/build" requests.
 
@@ -267,7 +267,7 @@ def _resolve(path: str) -> Path:
     return p
 
 
-@tool
+@tool("Read")
 def read_file(path: str, start_line: int = 1, end_line: int = 0) -> str:
     """Read a text file with optional pagination. Returns line-numbered content.
 
@@ -306,7 +306,7 @@ def read_file(path: str, start_line: int = 1, end_line: int = 0) -> str:
         return f"error: {type(e).__name__}: {e}"
 
 
-@tool
+@tool("Write")
 def write_file(path: str, content: str) -> str:
     """Create or overwrite a file with the given content (the primary "build" tool).
 
@@ -345,7 +345,7 @@ def write_file(path: str, content: str) -> str:
         return f"error: {type(e).__name__}: {e}"
 
 
-@tool
+@tool("Edit")
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     """Replace the first occurrence of `old_string` with `new_string` in a file.
 
@@ -426,7 +426,7 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
         return f"error: {type(e).__name__}: {e}"
 
 
-@tool
+@tool("ApplyDiff")
 def apply_diff(path: str, search: str, replace: str) -> str:
     """Apply a precise SEARCH/REPLACE edit to a file (aider-style).
 
@@ -479,7 +479,7 @@ def apply_diff(path: str, search: str, replace: str) -> str:
         return f"error: {type(e).__name__}: {e}"
 
 
-@tool
+@tool("Glob")
 def glob_paths(pattern: str, root: str = ".") -> list[str]:
     """Find files by name pattern. Use this when the user says "find files" or "where is".
 
@@ -519,7 +519,7 @@ def glob_paths(pattern: str, root: str = ".") -> list[str]:
     return [h[1] for h in hits[:200]]
 
 
-@tool
+@tool("Grep")
 def grep_files(
     pattern: str,
     path: str = ".",
@@ -606,7 +606,7 @@ class _TextExtractor(HTMLParser):
         return re.sub(r"\n{3,}", "\n\n", "".join(self._out)).strip()
 
 
-@tool
+@tool("WebFetch")
 def web_fetch(url: str, max_chars: int = 4000) -> str:
     """Fetch a URL and return its visible text. Use for "check this URL" / "what's at X".
 
@@ -651,7 +651,7 @@ def web_fetch(url: str, max_chars: int = 4000) -> str:
         return f"error: {type(e).__name__}: {e}"
 
 
-@tool
+@tool("WebSearch")
 def web_search(query: str, max_results: int = 8) -> list[dict]:
     """Search the web. Use this for "look up X" / "search for Y" / "find articles about Z".
 
@@ -865,14 +865,24 @@ def browser_task(goal: str, start_url: str = "") -> str:
 # ---------- sub-agent (§19) ----------
 
 
-@tool
+@tool("Task")
 def spawn_agent(task: str, thread_id: str = "") -> str:
-    """Spawn a sub-Nexus to run a self-contained task and return its final answer.
+    """Dispatch a task to a sub-agent that runs to completion and returns the answer.
+
+    Use for autonomous, self-contained work that doesn't need step-by-step
+    visibility — research, parallel investigations, focused analyses.
 
     The sub-agent shares archival memory (so it can retrieve and remember) but
     runs on its own thread so its conversation doesn't pollute the parent's
-    context. Use for: parallel research, focused sub-tasks, evaluator runs,
-    anything that would otherwise blow the parent's context budget.
+    context. Sub-agents have access to the same tools you do.
+
+    Args:
+        task: a clear, self-contained task description. The sub-agent reads
+              this as its only initial context — be specific about what to
+              return ("under 200 words", "as JSON", "with citations").
+        thread_id: optional, mostly for reproducibility / replay.
+
+    Returns the sub-agent's final answer, capped at 8000 chars.
     """
     from nexus.agent import Oracle  # local import to avoid circular
     import uuid as _uuid
@@ -886,6 +896,81 @@ def spawn_agent(task: str, thread_id: str = "") -> str:
     return (answer or "")[:8000]
 
 
+# ---------- task tracking (Claude-Code parity) ----------
+
+# Module-level todo list. One per process — reset between threads/turns is
+# fine; the model treats it as scratch state, not durable memory.
+_TODO_LIST: list[dict] = []
+
+
+@tool("TodoWrite")
+def todo_write(todos: list[dict]) -> str:
+    """Create or replace the active task list. Use this proactively for multi-step work.
+
+    Call this whenever a task has 3+ steps, or whenever the user gives you
+    multiple things to do at once. Update the list as you complete steps —
+    pass the WHOLE list back each time, not deltas. Mark exactly one item
+    `in_progress` at a time.
+
+    Args:
+        todos: a list of {"content": str, "status": str} dicts. Status must
+               be one of: "pending", "in_progress", "completed".
+
+    Example:
+        todos = [
+            {"content": "Read existing config", "status": "in_progress"},
+            {"content": "Add new setting", "status": "pending"},
+            {"content": "Write test", "status": "pending"},
+        ]
+
+    Returns the rendered list as text. The user sees it in the REPL too.
+    """
+    global _TODO_LIST
+
+    # Validate + normalise
+    valid_status = {"pending", "in_progress", "completed"}
+    cleaned: list[dict] = []
+    for item in (todos or []):
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content", "")).strip()
+        status = str(item.get("status", "pending")).strip().lower()
+        if not content:
+            continue
+        if status not in valid_status:
+            status = "pending"
+        cleaned.append({"content": content[:200], "status": status})
+
+    if not cleaned:
+        _TODO_LIST = []
+        return "todo list cleared"
+
+    in_progress_count = sum(1 for t in cleaned if t["status"] == "in_progress")
+    if in_progress_count > 1:
+        # Auto-fix: keep only the first in_progress
+        seen_ip = False
+        for t in cleaned:
+            if t["status"] == "in_progress":
+                if seen_ip:
+                    t["status"] = "pending"
+                else:
+                    seen_ip = True
+
+    _TODO_LIST = cleaned
+
+    # Render for the model + the user (REPL hooks this for inline display).
+    icons = {"pending": "☐", "in_progress": "→", "completed": "✓"}
+    lines = ["todo list:"]
+    for t in cleaned:
+        lines.append(f"  {icons[t['status']]} {t['content']}")
+    return "\n".join(lines)
+
+
+def get_todos() -> list[dict]:
+    """REPL/UI helper — return the current todo list. Not exposed as a tool."""
+    return list(_TODO_LIST)
+
+
 # ---------- registry ----------
 
 
@@ -893,22 +978,24 @@ BUILTIN_TOOLS = [
     # time / system
     get_time,
     system_info,
-    run_command,
-    # files
-    read_file,
-    write_file,
-    edit_file,
-    apply_diff,
-    glob_paths,
-    grep_files,
+    # bash / files (Claude-Code-named)
+    run_command,    # exposed as Bash
+    read_file,      # exposed as Read
+    write_file,     # exposed as Write
+    edit_file,      # exposed as Edit
+    apply_diff,     # exposed as ApplyDiff (extra; precise multi-line)
+    glob_paths,     # exposed as Glob
+    grep_files,     # exposed as Grep
     # web
-    web_fetch,
-    web_search,
-    # memory
+    web_fetch,      # exposed as WebFetch
+    web_search,     # exposed as WebSearch
+    # task tracking
+    todo_write,     # exposed as TodoWrite
+    # memory (Nexus-specific extras)
     remember,
     recall_memory,
     # sub-agent + frontier + browser
-    spawn_agent,
+    spawn_agent,    # exposed as Task
     frontier_ask,
     browser_task,
 ]
