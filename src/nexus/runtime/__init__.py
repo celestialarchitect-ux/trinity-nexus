@@ -45,16 +45,23 @@ def get_backend(name: str | None = None) -> Backend:
         from nexus.runtime.backends.llama_cpp import LlamaCppBackend
 
         _BACKENDS[key] = LlamaCppBackend()
+    elif key in {"openai_compat", "frontier", "openrouter", "openai", "deepseek",
+                 "groq", "together", "fireworks", "xai", "mistral"}:
+        from nexus.runtime.backends.openai_compat import OpenAICompatBackend
+
+        # For provider-named aliases, use the preset; otherwise env-driven.
+        provider = key if key not in {"openai_compat", "frontier"} else None
+        _BACKENDS[key] = OpenAICompatBackend(provider=provider)
     else:
         raise ValueError(
-            f"unknown backend {key!r} — valid: ollama, llama_cpp "
-            "(openai / vllm coming)"
+            f"unknown backend {key!r} — valid: ollama, llama_cpp, "
+            "openrouter, openai, deepseek, groq, together, fireworks, xai, mistral"
         )
     return _BACKENDS[key]
 
 
 def available_backends() -> dict[str, bool]:
-    """Return {name: is_installed} so CLI can show what's reachable."""
+    """Return {name: is_installed/reachable}."""
     out = {"ollama": OllamaBackend().is_available()}
     try:
         from nexus.runtime.backends.llama_cpp import LlamaCppBackend
@@ -62,6 +69,12 @@ def available_backends() -> dict[str, bool]:
         out["llama_cpp"] = LlamaCppBackend().is_available()
     except Exception:
         out["llama_cpp"] = False
+    try:
+        from nexus.runtime.backends.openai_compat import OpenAICompatBackend
+
+        out["frontier"] = OpenAICompatBackend().is_available()
+    except Exception:
+        out["frontier"] = False
     return out
 
 

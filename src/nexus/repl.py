@@ -57,6 +57,11 @@ HELP_TEXT = """\
   /allow <tool> <pat>  shortcut: allow tool:pattern
   /deny <tool> <pat>   shortcut: deny tool:pattern
   /trace               show tool calls + memory tiers used recently
+  /model [list|<id>]   show or swap the primary model (session)
+  /frontier <provider> [model] [key=...]
+                       configure OpenAI-compat frontier backend
+                       providers: openrouter, openai, deepseek, groq,
+                                  together, fireworks, xai, mistral
   /paste               open $EDITOR / notepad for a big multi-line prompt
   /reset               new thread (memory kept, chat context dropped)
   /thread [id]         show or switch thread
@@ -359,6 +364,77 @@ def _handle_spawn(args: list[str], console: Console) -> None:
     console.print(Markdown(answer or "_no response_"))
 
 
+def _handle_model(args: list[str], console: Console) -> None:
+    """/model [list|<model_id>] — show or switch the primary model."""
+    import os as _os
+
+    from nexus.runtime import available_backends
+
+    if not args or args[0].lower() == "list":
+        console.print()
+        console.print("[bold #c77dff]models[/]")
+        backends = available_backends()
+        console.print(f"  [cyan]primary[/]   {settings.oracle_primary_model}")
+        console.print(f"  [cyan]fast[/]      {settings.oracle_fast_model}")
+        console.print(f"  [cyan]embed[/]     {settings.oracle_embed_model}")
+        console.print()
+        console.print("[bold #c77dff]backends[/]")
+        for name, avail in backends.items():
+            marker = "[#7cffb0]●[/]" if avail else "[dim]○[/]"
+            console.print(f"  {marker} {name}")
+        front_key = _os.environ.get("NEXUS_FRONTIER_API_KEY")
+        front_model = _os.environ.get("NEXUS_FRONTIER_MODEL", "(none set)")
+        front_provider = _os.environ.get("NEXUS_FRONTIER_PROVIDER", "(unset — using env base_url)")
+        console.print()
+        console.print("[bold #c77dff]frontier (via OpenAI-compat)[/]")
+        console.print(
+            f"  provider   {front_provider}\n"
+            f"  model      {front_model}\n"
+            f"  key        {'set' if front_key else '[yellow]NOT SET[/]'}"
+        )
+        console.print()
+        console.print("[dim]/model <model_id>     swap primary model for this session[/]")
+        console.print("[dim]/frontier <provider> <model>  set frontier provider + default model[/]")
+        return
+
+    new_model = args[0]
+    _os.environ["ORACLE_PRIMARY_MODEL"] = new_model
+    # Reload settings so downstream sees it
+    import importlib as _il
+    from nexus import config as _c
+    _il.reload(_c)
+    console.print(f"[#7cffb0]primary model →[/] {new_model}  [dim](this session)[/]")
+
+
+def _handle_frontier(args: list[str], console: Console) -> None:
+    """/frontier <provider> <model> [api_key] — configure the frontier backend."""
+    import os as _os
+
+    if not args:
+        console.print("[yellow]usage: /frontier <provider> [model] [key=...][/]")
+        console.print(
+            "[dim]providers: openrouter, openai, deepseek, groq, together, "
+            "fireworks, xai, mistral[/]"
+        )
+        return
+    provider = args[0].lower()
+    _os.environ["NEXUS_FRONTIER_PROVIDER"] = provider
+    if len(args) >= 2 and not args[1].startswith("key="):
+        _os.environ["NEXUS_FRONTIER_MODEL"] = args[1]
+    for a in args:
+        if a.startswith("key="):
+            _os.environ["NEXUS_FRONTIER_API_KEY"] = a.split("=", 1)[1]
+    # Clear cached backend so next use picks up new env
+    from nexus.runtime import _BACKENDS
+    _BACKENDS.pop("frontier", None)
+    _BACKENDS.pop("openai_compat", None)
+    _BACKENDS.pop(provider, None)
+    console.print(
+        f"[#7cffb0]frontier →[/] provider={provider} "
+        f"model={_os.environ.get('NEXUS_FRONTIER_MODEL', '(preset default)')}"
+    )
+
+
 def _handle_permissions(args: list[str], console: Console) -> None:
     """/permissions [list|allow <tool> <pattern>|deny <tool> <pattern>|remove <tool> <pattern>]"""
     from nexus import permissions as perms
@@ -619,6 +695,12 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                     continue
                 if cmd == "/trace":
                     _handle_trace(console)
+                    continue
+                if cmd == "/model":
+                    _handle_model(args, console)
+                    continue
+                if cmd == "/frontier":
+                    _handle_frontier(args, console)
                     continue
                 if cmd == "/paste":
                     pasted = _handle_paste(console)

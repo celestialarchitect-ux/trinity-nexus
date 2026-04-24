@@ -436,6 +436,65 @@ def remember(fact: str, tags: str = "") -> str:
     return f"remembered: id={mid} {fact[:80]}"
 
 
+# ---------- frontier-on-demand ----------
+
+
+@tool
+def frontier_ask(
+    prompt: str,
+    model: str = "",
+    system: str = "",
+    provider: str = "",
+) -> str:
+    """Consult a frontier model (Claude/GPT-5/Gemini/Grok/DeepSeek/etc.) as a tool.
+
+    Use when the local model isn't strong enough: hard reasoning, unfamiliar
+    domain, fresh-world-knowledge query, or validation of a risky decision.
+    Local Nexus stays the driver — this is one-shot consultation, no memory.
+
+    Args:
+        prompt:   the question to ask the frontier model.
+        model:    model id — e.g. "anthropic/claude-opus-4-7" on OpenRouter,
+                  "deepseek-chat", "gpt-5", "grok-4". Empty = env default.
+        system:   optional system prompt. Empty = "Be direct and truthful."
+        provider: optional — "openrouter"|"deepseek"|"anthropic"|"openai"|
+                  "groq"|"together"|"fireworks"|"xai"|"mistral".
+                  Empty = use NEXUS_FRONTIER_PROVIDER.
+
+    Returns the model's response text. Requires NEXUS_FRONTIER_API_KEY.
+    """
+    from nexus.runtime import get_backend
+    from nexus.runtime.types import ChatRequest, Message
+
+    backend_key = provider.lower() if provider else "frontier"
+    try:
+        be = get_backend(backend_key)
+    except ValueError as e:
+        return f"error: {e}"
+    if not be.is_available():
+        return (
+            "error: frontier backend not configured. Set NEXUS_FRONTIER_API_KEY "
+            "(and optionally NEXUS_FRONTIER_BASE_URL / NEXUS_FRONTIER_MODEL) "
+            "or pick a provider preset via NEXUS_FRONTIER_PROVIDER."
+        )
+
+    req = ChatRequest(
+        messages=[
+            Message(role="system", content=system or "Be direct and truthful. No filler."),
+            Message(role="user", content=prompt),
+        ],
+        model=model or "",
+        temperature=0.4,
+        num_ctx=8192,
+        max_tokens=4096,
+    )
+    try:
+        resp = be.chat(req)
+    except Exception as e:
+        return f"error: {type(e).__name__}: {e}"
+    return (resp.content or "")[:8000]
+
+
 # ---------- sub-agent (§19) ----------
 
 
@@ -480,6 +539,7 @@ BUILTIN_TOOLS = [
     web_search,
     # memory
     remember,
-    # sub-agent
+    # sub-agent + frontier
     spawn_agent,
+    frontier_ask,
 ]
