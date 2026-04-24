@@ -41,7 +41,7 @@ HISTORY_PATH = Path.home() / ".nexus_history"
 SLASH_COMMANDS = [
     "/help", "/status", "/exit", "/quit",
     "/onboard", "/user-map",
-    "/mode", "/memory", "/skills", "/cost", "/rate",
+    "/mode", "/modes", "/memory", "/skills", "/cost", "/rate",
     "/plan", "/execute", "/compact", "/rewind",
     "/sessions", "/resume", "/reset", "/thread",
     "/reflect", "/evolve", "/spawn", "/trace",
@@ -1481,6 +1481,9 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                     continue
                 if cmd == "/mode":
                     _handle_mode(args, console)
+                    continue
+                if cmd == "/modes":
+                    _handle_mode(["list"], console)
                     continue
                 if cmd == "/onboard":
                     _handle_onboard(console)
