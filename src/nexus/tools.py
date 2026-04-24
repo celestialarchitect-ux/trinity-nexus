@@ -592,6 +592,39 @@ def remember(fact: str, tags: str = "") -> str:
     return f"remembered: id={mid} {fact[:80]}"
 
 
+@tool
+def recall_memory(query: str, k: int = 5) -> list[dict]:
+    """Search Trinity Nexus's archival memory for prior facts the user asked to remember.
+
+    Use this when the user asks about *their own* preferences, stored decisions,
+    or anything previously saved via `/remember` or the `remember` tool. This
+    queries the archival tier (stored memories), NOT the ingested docs corpus.
+
+    Args:
+        query: what to look up (natural language).
+        k: how many results to return (1-10, default 5).
+    """
+    from nexus.memory import MemoryTiers
+
+    k = max(1, min(int(k), 10))
+    try:
+        hits = MemoryTiers().archival.query(query, k=k) or []
+    except Exception as e:
+        return [{"error": f"{type(e).__name__}: {e}"}]
+    out: list[dict] = []
+    for h in hits:
+        out.append(
+            {
+                "id": h.get("id", ""),
+                "fact": (h.get("content") or h.get("fact") or "")[:400],
+                "tags": h.get("tags", []),
+                "source": h.get("source", ""),
+                "ts": h.get("ts", h.get("created_at", "")),
+            }
+        )
+    return out
+
+
 # ---------- frontier-on-demand ----------
 
 
@@ -747,6 +780,7 @@ BUILTIN_TOOLS = [
     web_search,
     # memory
     remember,
+    recall_memory,
     # sub-agent + frontier + browser
     spawn_agent,
     frontier_ask,
