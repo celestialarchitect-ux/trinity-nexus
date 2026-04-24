@@ -195,7 +195,14 @@ def _bottom_toolbar_factory(get_state):
 
 
 def _build_session(get_state=None) -> PromptSession | None:
-    """prompt-toolkit session if possible; None = caller falls back to input()."""
+    """prompt-toolkit session if possible; None = caller falls back to input().
+
+    The bottom_toolbar is opt-in (NEXUS_TOOLBAR=on) because prompt-toolkit's
+    bottom_toolbar smudges into the scrollback on many Windows terminals
+    when streaming output competes with redraws. We default to off and
+    print a single-line status header before each prompt instead — this
+    is what's reliable and what `/status` already gives you on demand.
+    """
     try:
         bindings = KeyBindings()
 
@@ -212,11 +219,40 @@ def _build_session(get_state=None) -> PromptSession | None:
             completer=_NexusCompleter(),
             complete_while_typing=False,
         )
-        if get_state is not None:
+        if get_state is not None and os.environ.get("NEXUS_TOOLBAR", "off").lower() in {"on", "1", "true"}:
             kwargs["bottom_toolbar"] = _bottom_toolbar_factory(get_state)
         return PromptSession(**kwargs)
     except Exception:
         return None
+
+
+def _print_inline_status(console: Console, get_state) -> None:
+    """One-line status header above the prompt — works in every terminal."""
+    try:
+        s = get_state()
+    except Exception:
+        return
+    parts: list[str] = [
+        f"[#c77dff]{s.get('instance', 'Nexus')}[/]",
+        f"[dim]{s.get('model', '?')}[/]",
+    ]
+    mode = s.get("mode")
+    if mode and mode != "free":
+        parts.append(f"[#c77dff]{mode}[/]")
+    ctx_pct = s.get("ctx_pct")
+    if ctx_pct is not None:
+        ctx_color = "red" if ctx_pct >= 85 else ("yellow" if ctx_pct >= 65 else "dim")
+        parts.append(f"[{ctx_color}]ctx {ctx_pct:.0f}%[/]")
+    if s.get("safe"):
+        parts.append("[yellow]SAFE[/]")
+    if s.get("readonly"):
+        parts.append("[yellow]READONLY[/]")
+    if s.get("dangerous"):
+        parts.append("[red]DANGEROUS[/]")
+    cost = s.get("cost_usd", 0.0) or 0.0
+    if cost > 0:
+        parts.append(f"[dim]${cost:.3f}[/]")
+    console.print("[dim]·[/] " + "  ·  ".join(parts), highlight=False)
 
 
 _SESSION_BROKEN = False  # set to True after prompt-toolkit crashes mid-session
@@ -1396,9 +1432,16 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
             "[dim]to orient me, or just start talking.[/]\n"
         )
 
+    # Toolbar mode flag — read once. Off by default (more reliable in Windows terminals).
+    _toolbar_on = os.environ.get("NEXUS_TOOLBAR", "off").lower() in {"on", "1", "true"}
+
     try:
         while True:
             try:
+                # Print a one-line status header above the prompt unless the
+                # bottom_toolbar is taking care of it.
+                if not _toolbar_on:
+                    _print_inline_status(console, _state)
                 user_in = _read_line(session, console).strip()
             except KeyboardInterrupt:
                 now = time.time()

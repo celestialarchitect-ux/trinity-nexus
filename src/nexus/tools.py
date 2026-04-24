@@ -21,9 +21,9 @@ from typing import Any
 import httpx
 from langchain_core.tools import tool
 
-MAX_READ_BYTES = 256_000
-MAX_EDIT_BYTES = 1_000_000
-MAX_HTTP_BYTES = 600_000
+MAX_READ_BYTES = 10_000_000   # 10 MB — Claude Code reads up to ~5 MB; we go higher
+MAX_EDIT_BYTES = 5_000_000    # 5 MB
+MAX_HTTP_BYTES = 2_000_000    # 2 MB
 
 
 def _sys_stdin_is_tty() -> bool:
