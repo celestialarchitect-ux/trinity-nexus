@@ -61,6 +61,53 @@ def set_title(thread_id: str, title: str) -> None:
     log(thread_id, "title", text=title[:60])
 
 
+def _clean_title(raw: str) -> str:
+    """Strip qwen3-style prefaces and meta-speak out of a generated title."""
+    import re
+    if not raw:
+        return ""
+    s = raw.strip()
+
+    # Kill leading verbose prefaces. Only strip up to the first colon/dash/newline
+    # so a short preamble like "Sure!" followed by the actual title still yields
+    # the title. Applied up to twice for nested prefaces.
+    preface_pat = (
+        r"^(?:"
+        r"okay[,!.]?|sure[,!.]?|well[,!.]?|"
+        r"here(?:'s| is)?(?:\s+(?:the|a|your))?(?:\s+title)?|"
+        r"the\s+title(?:\s+is)?|"
+        r"title(?:\s+is)?|"
+        r"we\s+are\s+generating\s+a\s+title\s+for[^:\n]*|"
+        r"i'?ll\s+give\s+you[^:\n]*|"
+        r"let\s+me[^:\n]*|"
+        r"based\s+on[^:\n]*"
+        r")\s*[:\-–—]\s*"
+    )
+    for _ in range(2):
+        new = re.sub(preface_pat, "", s, flags=re.IGNORECASE)
+        if new == s:
+            break
+        s = new
+    # Also strip bare leading interjections ("Sure! ", "Okay, ") with no colon
+    s = re.sub(r"^(?:okay|sure|well|right|got it|alright)[,!.]?\s+", "", s, flags=re.IGNORECASE)
+
+    # Take the first non-empty line.
+    for line in s.splitlines():
+        line = line.strip().strip('"').strip("'").rstrip(".").strip()
+        if not line:
+            continue
+        # Drop stray leading bullets
+        line = re.sub(r"^[-*•]\s*", "", line)
+        if not line:
+            continue
+        # Hard truncate
+        words = line.split()
+        if len(words) > 10:
+            words = words[:6]
+        return " ".join(words)[:60]
+    return ""
+
+
 def ensure_title(thread_id: str, first_user_message: str, model: str) -> str | None:
     """If the thread has no title yet, generate one from the first message.
 
@@ -75,24 +122,25 @@ def ensure_title(thread_id: str, first_user_message: str, model: str) -> str | N
 
         client = _ollama.Client(host=settings.oracle_ollama_host)
         system = (
-            "You generate 3-6 word titles for conversations. No quotes, no "
-            "period. Return ONLY the title. Title the user's first message "
-            "below so it reads naturally in a list of sessions."
+            "Output ONLY a 3-6 word title for the message below. No preamble, "
+            "no explanation, no quotes, no period, no markdown. Just the "
+            "title words, nothing else. Example good: 'Build landing page'. "
+            "Example bad: 'Here is the title: Build landing page'."
         )
         kw: dict = dict(
             model=model,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": first_user_message[:400]},
+                {"role": "user", "content": "Message: " + first_user_message[:400] + "\n\nTitle:"},
             ],
-            options={"temperature": 0.2, "num_predict": 40, "num_ctx": 2048},
+            options={"temperature": 0.1, "num_predict": 30, "num_ctx": 2048},
         )
         try:
             r = client.chat(**kw, think=False)
         except TypeError:
             r = client.chat(**kw)
-        title = (r["message"]["content"] or "").strip().strip('"').strip("'").rstrip(".")
-        title = title.splitlines()[0][:60] if title else ""
+        raw = (r["message"]["content"] or "").strip()
+        title = _clean_title(raw)
         if title:
             set_title(thread_id, title)
             return title

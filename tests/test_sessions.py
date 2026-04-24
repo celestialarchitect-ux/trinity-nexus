@@ -59,6 +59,35 @@ def test_title_roundtrip(tmp_path, monkeypatch):
     assert sessions.get_title("new-thread") == "first-title"
 
 
+def test_clean_title_strips_prefaces():
+    """Title generator must strip qwen3-style meta-speak from raw output."""
+    from nexus.sessions import _clean_title
+
+    # Qwen's "thinking leak" case that prompted this fix
+    leaky = 'We are generating a title for the user\'s first message: "build a landing page for X"'
+    got = _clean_title(leaky)
+    assert "generating a title" not in got.lower()
+    assert got  # not empty
+
+    # Common prefaces
+    assert _clean_title("Here is the title: Build Landing Page") == "Build Landing Page"
+    assert _clean_title("Sure! Fix the login bug.") == "Fix the login bug"
+    assert _clean_title('"Quoted Title"') == "Quoted Title"
+    assert _clean_title("- Bulleted Title") == "Bulleted Title"
+
+    # Empty / whitespace-only
+    assert _clean_title("") == ""
+    assert _clean_title("   \n\n  ") == ""
+
+    # Multiline: take first non-empty, usable line
+    assert _clean_title("\n\nActual Title\nblah blah") == "Actual Title"
+
+    # Over-long response gets truncated to ~6 words
+    long_resp = "one two three four five six seven eight nine ten eleven"
+    cleaned = _clean_title(long_resp)
+    assert len(cleaned.split()) <= 6
+
+
 def test_thread_id_sanitised(tmp_path, monkeypatch):
     monkeypatch.setenv("ORACLE_HOME", str(tmp_path))
     monkeypatch.setenv("NEXUS_RECORD", "1")
