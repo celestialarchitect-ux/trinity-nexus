@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+data/
+logs/
+memory/*.db
+memory/*.sqlite
+memory/*.lance/
+.pytest_cache/
+.ruff_cache/
+*.lora
+*.safetensors
+dist/
+build/
+
+# Runtime detritus we don't want in the published repo
+src/oracle/skills/evolved_archive/
+.oracle_history

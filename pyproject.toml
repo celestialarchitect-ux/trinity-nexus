@@ -1,0 +1,70 @@
+[project]
+name = "oracle"
+version = "0.1.0"
+description = "Oracle — sovereign personal AI prototype (Trinity Command)"
+requires-python = ">=3.12"
+readme = "README.md"
+authors = [{ name = "Zach Kalahiki / Trinity Command" }]
+
+dependencies = [
+    # LLM + orchestration
+    "ollama>=0.4.0",
+    "litellm>=1.50.0",
+    "langgraph>=0.2.50",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "langchain-core>=0.3.0",
+    "langchain-ollama>=0.2.0",
+
+    # Memory + retrieval
+    "lancedb>=0.14.0",
+    "pandas>=2.2.0",
+    "sqlite-utils>=3.37",
+    "mcp[cli]>=1.0.0",
+
+    # Agent + tools
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+
+    # CLI + UX
+    "click>=8.1.7",
+    "rich>=13.9.0",
+    "prompt-toolkit>=3.0.48",
+
+    # HTTP (mesh sync + embed calls)
+    "httpx>=0.27.0",
+
+    # Utilities
+    "python-dotenv>=1.0.1",
+    "structlog>=24.4.0",
+    "tenacity>=9.0.0",
+
+    # Mesh (Ed25519 signing for skill deltas)
+    "cryptography>=43.0.0",
+]
+
+[project.optional-dependencies]
+training = [
+    # Nightly QLoRA stack (Week 2)
+    "torch>=2.5.0",
+    "transformers>=4.46.0",
+    "peft>=0.13.0",
+    "trl>=0.12.0",
+    "bitsandbytes>=0.44.0",
+    "datasets>=3.0.0",
+    "accelerate>=1.0.0",
+]
+mesh = [
+    # libp2p mesh (Week 3)
+    "pynacl>=1.5.0",
+    "cryptography>=43.0.0",
+]
+
+[project.scripts]
+oracle = "oracle.cli:cli"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
