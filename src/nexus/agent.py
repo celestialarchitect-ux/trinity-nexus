@@ -146,25 +146,40 @@ _ACTION_VERBS = (
 )
 
 
+_ACTION_VERB_REGEX = None  # compiled lazily on first call
+
+
 def _looks_like_action_request(text: str) -> bool:
     """Heuristic: does this user message want an artifact, not just an answer?
 
     Used to auto-route to the frontier model when one is configured. Keep this
     cheap (no LLM call) and slightly over-eager — false positives just send
     chatty questions to the bigger model, which is acceptable.
+
+    Matches whole-word verbs only ("create" yes, "created" no) so things like
+    "what year was python created" don't trigger.
     """
+    global _ACTION_VERB_REGEX
     if not text:
         return False
     t = text.lower().strip()
-    # Strip leading slash commands and prefixes.
     if t.startswith(("/", "@", "!", "#", "?")):
         return False
     head = t[:200]
-    for verb in _ACTION_VERBS:
-        if verb in head:
-            return True
-    # Imperative/imperative-adjacent grammar (`can you ...`, `please ...`,
-    # `i want you to ...`) is also action-flavored.
+
+    if _ACTION_VERB_REGEX is None:
+        import re as _re
+        # Match each verb only as a whole word OR followed by a space — so
+        # "create" matches "create file" but not "created" or "creator".
+        # Multi-word triggers like "show me" still match.
+        verbs_pattern = "|".join(
+            _re.escape(v) for v in sorted(_ACTION_VERBS, key=len, reverse=True)
+        )
+        _ACTION_VERB_REGEX = _re.compile(rf"\b(?:{verbs_pattern})\b")
+
+    if _ACTION_VERB_REGEX.search(head):
+        return True
+
     for trigger in ("can you ", "please ", "i want you to ", "i need you to "):
         if t.startswith(trigger):
             return True
@@ -222,6 +237,37 @@ def _make_graph(checkpoint_path: Path):
             return True
         return False
 
+    _REFUSAL_PHRASES = (
+        "i can't",
+        "i cannot",
+        "i don't have access",
+        "i don't have the ability",
+        "i do not have the capability",
+        "i'm unable",
+        "i am unable",
+        "i'm not able",
+        "i am not able",
+        "sorry, i can't",
+        "i'm sorry, i can't",
+        "as an ai",
+        "i lack the",
+    )
+
+    def _looks_like_refusal(response) -> bool:
+        """Did the local model bail out instead of doing the work?
+
+        We only count this when there are NO tool calls (a tool call means
+        the model is actually trying). We look at the first ~300 chars of
+        content for the common refusal openers.
+        """
+        if not isinstance(response, AIMessage):
+            return False
+        if getattr(response, "tool_calls", None):
+            return False
+        content = response.content if isinstance(response.content, str) else ""
+        head = content.lower().lstrip()[:300]
+        return any(p in head for p in _REFUSAL_PHRASES)
+
     def llm_node(state: OracleState) -> dict:
         use_frontier = _should_use_frontier(state)
         if use_frontier:
@@ -233,7 +279,6 @@ def _make_graph(checkpoint_path: Path):
                 # turn still completes; surface a small note in the response.
                 log.warning("frontier LLM failed (%s); falling back to local", e)
                 response = local_llm.invoke(state["messages"])
-                # Annotate: prefix the local response so the user knows
                 fallback_note = (
                     f"\n\n_(frontier unavailable: {type(e).__name__}; answered locally)_"
                 )
@@ -244,7 +289,24 @@ def _make_graph(checkpoint_path: Path):
                         id=getattr(response, "id", None),
                     )
                 return {"messages": [response]}
+
+        # Local path. After the response, escalate to frontier if local refused
+        # outright AND we haven't already disabled escalation.
         response = local_llm.invoke(state["messages"])
+
+        if (
+            frontier_llm is not None
+            and _os.environ.get("NEXUS_AUTO_ESCALATE", "1").lower() in {"1", "true", "yes", "on"}
+            and _looks_like_refusal(response)
+        ):
+            log.info("local refused; escalating to frontier")
+            try:
+                escalated = frontier_llm.invoke(state["messages"])
+                if isinstance(escalated, AIMessage):
+                    return {"messages": [escalated]}
+            except Exception as e:
+                log.warning("frontier escalation failed (%s); keeping local response", e)
+
         return {"messages": [response]}
 
     tool_node = ToolNode(_all_tools())
