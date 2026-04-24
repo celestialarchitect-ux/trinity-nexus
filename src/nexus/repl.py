@@ -102,6 +102,10 @@ HELP_TEXT = """\
   /help                show this help
   /status              one-glance current setup (thread, model, mode,
                        backends, security, cost)
+  /config [show|get|set|edit]
+                       inspect or edit .env settings inline
+  /replay <thread>     re-run a past session's user turns against
+                       current model (side-by-side comparison)
   /onboard             walk §04/§23/§24 orientation to build the USER MAP
   /user-map            print the active USER MAP
   /mode [name|list|off] switch operating mode (§13). Names: architect,
@@ -313,10 +317,17 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                     thinking.resume(verb="Invoking")
                 elif t == "tool_result":
                     content_preview = evt.get("content", "")
+                    tool_name = evt.get("name", "")
                     thinking.pause()
-                    console.print(
-                        f"  [dim]⎿[/] [dim]{_condense_tool_result(content_preview)}[/]"
-                    )
+                    # Diff-style render for file-edit results (§17 + Claude-Code parity)
+                    if tool_name in {"edit_file", "apply_diff", "write_file"} and "edited" in content_preview.lower() or tool_name == "apply_diff" and "applied diff" in content_preview.lower():
+                        # Best-effort green check line — the actual before/after
+                        # diff lives on disk; print a one-liner summary.
+                        console.print(f"  [#7cffb0]✓[/] [dim]{_condense_tool_result(content_preview)}[/]")
+                    else:
+                        console.print(
+                            f"  [dim]⎿[/] [dim]{_condense_tool_result(content_preview)}[/]"
+                        )
                     _hooks.run("post_tool", {"content": content_preview[:2000]})
                     # §31 Failure Recovery / self-heal hint: if the tool
                     # returned an obvious error, nudge the agent to adjust.
@@ -546,6 +557,75 @@ def _handle_spawn(args: list[str], console: Console) -> None:
     finally:
         sub.close()
     console.print(Markdown(answer or "_no response_"))
+
+
+def _handle_config(args: list[str], console: Console) -> None:
+    """/config [show|get KEY|set KEY=VAL|edit]"""
+    import os as _os
+    from pathlib import Path as _P
+
+    env_path = _P(settings.oracle_home).parent / ".env"
+    if not env_path.exists():
+        # settings.oracle_home is <repo>/data by default; .env is next to it
+        from nexus import config as _c
+        cand = _P(_c.__file__).resolve().parents[2] / ".env"
+        if cand.exists():
+            env_path = cand
+
+    if not args or args[0] == "show":
+        if not env_path.exists():
+            console.print("[yellow]no .env found[/]")
+            return
+        from nexus.security import redact
+        body = redact(env_path.read_text(encoding="utf-8"))
+        console.print(Markdown(f"```env\n{body}\n```"))
+        console.print(f"[dim]file: {env_path}[/]")
+        return
+
+    sub = args[0].lower()
+    if sub == "edit":
+        import subprocess as _sp
+        editor = _os.environ.get("EDITOR") or ("notepad" if _os.name == "nt" else "nano")
+        _sp.run([editor, str(env_path)])
+        console.print("[dim]saved. restart nexus (or the setting's reader) for changes to take effect.[/]")
+        return
+
+    if sub == "get" and len(args) >= 2:
+        key = args[1]
+        val = _os.environ.get(key, "<unset>")
+        from nexus.security import redact
+        console.print(f"[cyan]{key}[/] = {redact(val)}")
+        return
+
+    if sub == "set" and len(args) >= 2:
+        expr = " ".join(args[1:])
+        if "=" not in expr:
+            console.print("[yellow]usage: /config set KEY=VAL[/]")
+            return
+        key, _, val = expr.partition("=")
+        key, val = key.strip(), val.strip().strip('"').strip("'")
+        # Update env for this process
+        _os.environ[key] = val
+        # Persist to .env
+        try:
+            lines: list[str] = []
+            found = False
+            if env_path.exists():
+                for line in env_path.read_text(encoding="utf-8").splitlines():
+                    if line.startswith(f"{key}="):
+                        lines.append(f"{key}={val}")
+                        found = True
+                    else:
+                        lines.append(line)
+            if not found:
+                lines.append(f"{key}={val}")
+            env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            console.print(f"[#7cffb0]set[/] {key} (persisted to {env_path.name})")
+        except Exception as e:
+            console.print(f"[yellow]set in-process only · persist failed: {e}[/]")
+        return
+
+    console.print("[yellow]usage: /config [show|get KEY|set KEY=VAL|edit][/]")
 
 
 def _handle_status(console: Console, thread: str) -> None:
@@ -1283,6 +1363,36 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                     continue
                 if cmd == "/status":
                     _handle_status(console, thread)
+                    continue
+                if cmd == "/config":
+                    _handle_config(args, console)
+                    continue
+                if cmd == "/replay":
+                    if not args:
+                        console.print("[yellow]usage: /replay <thread_id>[/]")
+                    else:
+                        # Delegate to the CLI command logic
+                        try:
+                            from nexus.sessions import read_thread
+                            from nexus.agent import Oracle as _O
+                            tid = args[0]
+                            events = read_thread(tid, limit=120)
+                            turns = [e for e in events if e.get("kind") == "user"][:20]
+                            if not turns:
+                                console.print(f"[yellow]no user turns in {tid}[/]")
+                            else:
+                                new_t = f"replay-{tid}-{int(time.time())}"
+                                sub = _O(thread_id=new_t)
+                                try:
+                                    for i, t in enumerate(turns, 1):
+                                        p = str(t.get("content", ""))[:1000]
+                                        console.print(f"[dim]--- {i}/{len(turns)} ---[/] [cyan]{p[:120]}[/]")
+                                        sub.ask(p)
+                                finally:
+                                    sub.close()
+                                console.print(f"[#7cffb0]replay done[/] → thread [cyan]{new_t}[/]")
+                        except Exception as e:
+                            console.print(f"[red]replay failed[/] {e}")
                     continue
                 if cmd == "/plan":
                     _handle_plan(args, console, thread)

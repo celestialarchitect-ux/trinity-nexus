@@ -1,6 +1,6 @@
 [project]
 name = "trinity-nexus"
-version = "1.0.4"
+version = "1.0.5"
 description = "Trinity Nexus — sovereign adaptive intelligence (Omega Foundation)"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -76,6 +76,15 @@ mesh = [
     # libp2p mesh (Week 3)
     "pynacl>=1.5.0",
     "cryptography>=43.0.0",
+]
+browser = [
+    # browser_task tool — real Chromium via Playwright
+    "browser-use>=0.1.0",
+    "playwright>=1.40.0",
+]
+local-runtime = [
+    # llama_cpp backend (replaces Ollama for parallelism + KV-cache reuse)
+    "llama-cpp-python>=0.2.80",
 ]
 
 [project.scripts]

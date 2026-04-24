@@ -47,13 +47,20 @@ def _all_tools() -> list:
 
 
 def _make_llm(model: str | None = None) -> ChatOllama:
+    # §13 — if a mode is active and names a preferred model, use it.
+    if model is None:
+        try:
+            from nexus.modes import preferred_model_for_active
+            mode_model = preferred_model_for_active()
+            if mode_model:
+                model = mode_model
+        except Exception:
+            pass
     return ChatOllama(
         model=model or settings.oracle_primary_model,
         base_url=settings.oracle_ollama_host,
         temperature=0.7,
         num_ctx=settings.oracle_num_ctx,
-        # reasoning=True (default) keeps qwen3's CoT in a separate field so
-        # `content` stays clean. Flip to False for snappier non-tool chat.
         client_kwargs={"timeout": settings.oracle_llm_timeout_sec},
     ).bind_tools(_all_tools())
 
@@ -141,9 +148,31 @@ class Oracle:
         sys_msg = _build_system_with_context(self.memory, prompt, self.thread_id)
         return [sys_msg, HumanMessage(content=prompt)]
 
+    def _maybe_compact(self) -> None:
+        """Auto-compact if the session transcript is getting long.
+
+        Triggered when > NEXUS_AUTOCOMPACT_EVENTS (default 80) events exist.
+        The summary lands in the `threads` tier and surfaces automatically
+        on the next turn via nine-tier injection. Best-effort; never raises.
+        """
+        import os as _os
+        try:
+            if _os.environ.get("NEXUS_AUTOCOMPACT", "1") != "1":
+                return
+            threshold = int(_os.environ.get("NEXUS_AUTOCOMPACT_EVENTS", "80"))
+            from nexus import sessions as _s
+            events = _s.read_thread(self.thread_id, limit=threshold + 20)
+            if len(events) < threshold:
+                return
+            from nexus.compaction import compact as _compact
+            _compact(self.thread_id, keep_recent=max(10, threshold // 4))
+        except Exception:
+            pass
+
     def ask(self, prompt: str) -> str:
         from nexus import sessions as _sessions
 
+        self._maybe_compact()
         self.memory.log_turn(role="user", content=prompt, thread_id=self.thread_id)
         _sessions.log(self.thread_id, "user", content=prompt)
 
@@ -194,6 +223,7 @@ class Oracle:
             )
 
     def stream_events(self, prompt: str):
+        self._maybe_compact()
         """Token-level streaming with tagged events.
 
         Yields dicts with a 'type' field:

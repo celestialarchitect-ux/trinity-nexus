@@ -26,6 +26,42 @@ MAX_EDIT_BYTES = 1_000_000
 MAX_HTTP_BYTES = 600_000
 
 
+def _sys_stdin_is_tty() -> bool:
+    import sys as _sys
+    try:
+        return bool(_sys.stdin and _sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+def _auto_commit(path: Path, action: str) -> None:
+    """If NEXUS_AUTO_COMMIT=1 and path lives inside a git repo, commit the change."""
+    if os.environ.get("NEXUS_AUTO_COMMIT") != "1":
+        return
+    try:
+        # Find the containing repo by walking up for .git
+        p = path.resolve()
+        repo_root = None
+        for parent in [p.parent] + list(p.parents):
+            if (parent / ".git").exists():
+                repo_root = parent
+                break
+        if not repo_root:
+            return
+        rel = p.relative_to(repo_root)
+        subprocess.run(
+            ["git", "-C", str(repo_root), "add", str(rel)],
+            capture_output=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo_root), "commit", "-m",
+             f"nexus: {action} {rel}"],
+            capture_output=True, timeout=10,
+        )
+    except Exception:
+        pass
+
+
 # ---------- time / system ----------
 
 
@@ -98,15 +134,40 @@ def run_command(command: str, timeout_sec: int = 30) -> dict[str, Any]:
         return {"stdout": "", "stderr": "[rate-limited] tool calls exceeded per-minute cap", "returncode": -6}
     danger = _is_dangerous(command)
     if danger:
-        _sec.audit("run_command_blocked", command=command, pattern=danger)
-        return {
-            "stdout": "",
-            "stderr": (
-                f"[blocked §29] command matches destructive pattern ({danger}). "
-                "Set NEXUS_ALLOW_DANGEROUS=1 or run /dangerous to override."
-            ),
-            "returncode": -3,
-        }
+        # §29 — interactive confirmation when run in a TTY context.
+        # If NEXUS_CONFIRM_DANGEROUS is unset and we have a real stdin, prompt.
+        if (
+            os.environ.get("NEXUS_CONFIRM_DANGEROUS", "1") == "1"
+            and _sys_stdin_is_tty()
+        ):
+            import sys as _sys
+            print(
+                f"\n[§29 CONFIRM] destructive pattern ({danger}):\n"
+                f"  {command}\nproceed? y/N: ",
+                end="", flush=True,
+            )
+            try:
+                reply = _sys.stdin.readline().strip().lower()
+            except Exception:
+                reply = ""
+            if reply not in {"y", "yes"}:
+                _sec.audit("run_command_declined", command=command, pattern=danger)
+                return {
+                    "stdout": "",
+                    "stderr": "[declined] user did not confirm destructive op",
+                    "returncode": -7,
+                }
+            _sec.audit("run_command_confirmed", command=command, pattern=danger)
+        else:
+            _sec.audit("run_command_blocked", command=command, pattern=danger)
+            return {
+                "stdout": "",
+                "stderr": (
+                    f"[blocked §29] command matches destructive pattern ({danger}). "
+                    "Set NEXUS_ALLOW_DANGEROUS=1 or run /dangerous to override."
+                ),
+                "returncode": -3,
+            }
     _sec.audit("run_command", command=command)
     try:
         result = subprocess.run(
@@ -175,6 +236,7 @@ def write_file(path: str, content: str) -> str:
             return f"error: content exceeds {MAX_EDIT_BYTES:,} bytes"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
+        _auto_commit(p, "write")
         return f"wrote {len(content)} chars to {p}"
     except Exception as e:
         return f"error: {type(e).__name__}: {e}"
@@ -201,6 +263,7 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
         count = text.count(old_string)
         if count == 1:
             p.write_text(text.replace(old_string, new_string, 1), encoding="utf-8")
+            _auto_commit(p, "edit")
             return f"edited {p} (1 replacement)"
         if count > 1:
             return f"error: old_string appears {count} times — add more context to make it unique"
@@ -268,6 +331,7 @@ def apply_diff(path: str, search: str, replace: str) -> str:
         if count > 1:
             return f"error: search block appears {count} times — widen the context"
         p.write_text(text.replace(search, replace, 1), encoding="utf-8")
+        _auto_commit(p, "diff")
         delta = replace.count("\n") - search.count("\n")
         sign = "+" if delta >= 0 else ""
         return f"applied diff to {p} ({sign}{delta} lines)"
@@ -522,6 +586,58 @@ def frontier_ask(
     return (resp.content or "")[:8000]
 
 
+# ---------- browser (optional, browser-use) ----------
+
+
+@tool
+def browser_task(goal: str, start_url: str = "") -> str:
+    """Drive a real browser (Chromium via Playwright) to accomplish `goal`.
+
+    Uses the `browser-use` library. Install once:
+
+        pip install "browser-use>=0.1" playwright
+        playwright install chromium
+
+    Blocked under NEXUS_SAFE=1 (browsing can touch external systems and
+    auto-click destructive links). Use for: research that requires JS, form
+    submission, dashboard scraping. Do NOT use for: destructive account ops.
+
+    Returns a text summary of what the browser agent did + the final page.
+    """
+    from nexus import security as _sec
+
+    if _sec.is_safe_mode() or _sec.is_readonly():
+        return "error: [blocked §29] browser_task disabled under safe/readonly mode"
+    if not _sec.tool_call_allowed():
+        return "error: [rate-limited] tool calls exceeded"
+
+    try:
+        from browser_use import Agent as _BUAgent  # type: ignore
+        from langchain_ollama import ChatOllama  # reuse our backend
+    except ImportError:
+        return (
+            "error: browser-use not installed. Run:  "
+            'pip install "browser-use>=0.1" playwright && playwright install chromium'
+        )
+
+    try:
+        from nexus.config import settings as _s
+
+        llm = ChatOllama(
+            model=_s.oracle_primary_model,
+            base_url=_s.oracle_ollama_host,
+            num_ctx=_s.oracle_num_ctx,
+        )
+        task = goal if not start_url else f"Start at {start_url}. {goal}"
+        agent = _BUAgent(task=task, llm=llm)
+        import asyncio as _asyncio
+        result = _asyncio.run(agent.run())
+        _sec.audit("browser_task", goal=goal, url=start_url)
+        return str(result)[:4000]
+    except Exception as e:
+        return f"error: {type(e).__name__}: {e}"
+
+
 # ---------- sub-agent (§19) ----------
 
 
@@ -566,7 +682,8 @@ BUILTIN_TOOLS = [
     web_search,
     # memory
     remember,
-    # sub-agent + frontier
+    # sub-agent + frontier + browser
     spawn_agent,
     frontier_ask,
+    browser_task,
 ]

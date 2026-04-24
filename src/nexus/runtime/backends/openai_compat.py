@@ -134,9 +134,26 @@ class OpenAICompatBackend(Backend):
         ]
 
     def _messages(self, req: ChatRequest) -> list[dict]:
+        """Translate to OpenAI-compat. Add prompt-caching hints on the first
+        system message when talking to Anthropic / OpenRouter's Anthropic
+        routes (cache_control block lives in an extension field; providers
+        that don't understand it just ignore it)."""
         out: list[dict] = []
+        cache_hinted = False
+        cache_ok = "anthropic" in self.base_url or "openrouter" in self.base_url
         for m in req.messages:
             row: dict = {"role": m.role, "content": m.content}
+            if cache_ok and m.role == "system" and not cache_hinted and isinstance(m.content, str) and len(m.content) > 1024:
+                # Anthropic-style structured content for cache control on the
+                # first large system block. OpenAI ignores extra keys.
+                row["content"] = [
+                    {
+                        "type": "text",
+                        "text": m.content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+                cache_hinted = True
             if m.tool_calls:
                 row["tool_calls"] = m.tool_calls
             if m.tool_call_id:

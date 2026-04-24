@@ -34,15 +34,35 @@ console = Console(soft_wrap=True, legacy_windows=False)
 
 
 @click.group(invoke_without_command=True)
-@click.option("--thread", default="default", help="Thread id for the REPL session.")
+@click.option("--thread", default=None, help="Thread id for the REPL session (default: resume latest).")
+@click.option("--new", "new_thread", is_flag=True, help="Start a fresh thread instead of resuming latest.")
 @click.pass_context
-def cli(ctx: click.Context, thread: str):
-    """Oracle — sovereign personal AI.
+def cli(ctx: click.Context, thread: str | None, new_thread: bool):
+    """Trinity Nexus — sovereign adaptive intelligence.
 
     Run without a subcommand to enter the interactive terminal.
     """
     if ctx.invoked_subcommand is None:
         from nexus.repl import run_repl
+
+        if thread is None:
+            if new_thread:
+                thread = f"thread-{int(time.time())}"
+            else:
+                # Resume the most-recently-written thread, fall back to default
+                try:
+                    from nexus.sessions import list_threads
+                    from pathlib import Path as _P
+                    from nexus.config import settings as _s
+                    base = _s.oracle_home / "sessions"
+                    if base.exists():
+                        files = sorted(base.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+                        if files:
+                            thread = files[-1].stem
+                except Exception:
+                    pass
+                if thread is None:
+                    thread = "default"
 
         run_repl(console=console, thread=thread)
 
@@ -297,6 +317,40 @@ def frontier_models(provider):
         pout = pricing.get("completion", "")
         t.add_row(str(mid), str(ctx), str(pin), str(pout))
     console.print(t)
+
+
+@cli.command()
+@click.argument("thread_id")
+@click.option("--limit", default=40, help="Max user turns to replay.")
+def replay(thread_id: str, limit: int):
+    """Replay a past session's user turns against the current model, side-by-side."""
+    from nexus.agent import Oracle
+    from nexus.sessions import read_thread
+
+    events = read_thread(thread_id, limit=limit * 4)
+    user_turns = [e for e in events if e.get("kind") == "user"][:limit]
+    if not user_turns:
+        console.print(f"[yellow]no user turns in {thread_id}[/]")
+        return
+
+    console.print(f"[bold #c77dff]replaying[/] {len(user_turns)} turns from [cyan]{thread_id}[/]\n")
+    new_thread = f"replay-{thread_id}-{int(time.time())}"
+    oracle = Oracle(thread_id=new_thread)
+    try:
+        for i, turn in enumerate(user_turns, 1):
+            prompt = str(turn.get("content", ""))[:2000]
+            console.print(f"[dim]--- turn {i}/{len(user_turns)} ---[/]")
+            console.print(f"[cyan]user:[/] {prompt[:200]}")
+            t0 = time.perf_counter()
+            try:
+                resp = oracle.ask(prompt)
+                console.print(f"[#c77dff]now:[/]  {(resp or '')[:300]}")
+                console.print(f"[dim]({time.perf_counter() - t0:.1f}s)[/]\n")
+            except Exception as e:
+                console.print(f"[red]failed[/] {e}\n")
+    finally:
+        oracle.close()
+    console.print(f"[#7cffb0]replay complete[/] · new thread: {new_thread}")
 
 
 @cli.command()

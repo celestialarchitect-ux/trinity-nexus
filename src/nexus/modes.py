@@ -24,6 +24,9 @@ class Mode:
     name: str
     one_line: str
     directive: str
+    # Optional model override. Consulted at agent-init time; overridden by
+    # env var NEXUS_MODEL_<MODE_KEY> (e.g. NEXUS_MODEL_ARCHITECT=...).
+    preferred_model: str = ""
 
 
 MODES: dict[str, Mode] = {
@@ -193,6 +196,23 @@ def overlay() -> str:
         f"## ACTIVE OPERATING MODE — {m.name}\n"
         f"{m.directive}\n"
     )
+
+
+def preferred_model_for_active() -> str:
+    """Return the model for the active mode, if any.
+
+    Precedence: env NEXUS_MODEL_<KEY> > Mode.preferred_model > "".
+    Agent caller falls back to settings.oracle_primary_model on "".
+    """
+    import os as _os
+    m = get_active()
+    if not m:
+        return ""
+    env_key = f"NEXUS_MODEL_{m.key.upper()}"
+    env_val = _os.environ.get(env_key, "")
+    if env_val:
+        return env_val
+    return m.preferred_model or ""
 
 
 def describe_all() -> list[tuple[str, str]]:
