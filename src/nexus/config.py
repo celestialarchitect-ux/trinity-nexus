@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # the default "5m" gave 60s reloads between turns in our env.
     oracle_primary_keepalive: str = Field(default="-1")
 
+    # Route the agent loop through a frontier model (Claude / GPT / Llama-70B
+    # via Groq / etc.) instead of local Ollama. Local model is small (4B)
+    # and unreliable at multi-step tool use; frontier closes the gap. Off by
+    # default to preserve sovereignty. Toggle live with `--frontier` flag,
+    # /model frontier, or env NEXUS_USE_FRONTIER=1.
+    oracle_use_frontier: bool = Field(default=False)
+
     # Teacher (optional)
     deepseek_api_key: str = Field(default="")
     anthropic_api_key: str = Field(default="")

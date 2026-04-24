@@ -1054,6 +1054,34 @@ def _handle_model(args: list[str], console: Console) -> None:
         console.print("[dim]/frontier <provider> <model>  set frontier provider + default model[/]")
         return
 
+    arg = args[0].lower()
+
+    # Frontier toggle — biggest brain upgrade. Llama-70B / GPT-OSS-120B / Claude
+    # via configured frontier API instead of local 4B.
+    if arg in {"frontier", "cloud", "remote"}:
+        if not _os.environ.get("NEXUS_FRONTIER_API_KEY"):
+            console.print("[yellow]no NEXUS_FRONTIER_API_KEY set — configure first with[/] [bold]/frontier[/]")
+            return
+        _os.environ["NEXUS_USE_FRONTIER"] = "1"
+        m = _os.environ.get("NEXUS_FRONTIER_MODEL", "frontier")
+        p = _os.environ.get("NEXUS_FRONTIER_PROVIDER", "frontier")
+        console.print(
+            f"[#7cffb0]agent brain →[/] {m} ({p})  "
+            "[dim](takes effect on the next /reset — frontier mode rebuilds the LLM)[/]"
+        )
+        console.print(
+            "[dim]turns spent so far still use the previous brain. "
+            "type /reset to start a fresh thread on the new brain.[/]"
+        )
+        return
+    if arg in {"local", "ollama", "sovereign"}:
+        _os.environ["NEXUS_USE_FRONTIER"] = "0"
+        console.print(
+            f"[#7cffb0]agent brain →[/] local Ollama ({settings.oracle_primary_model})  "
+            "[dim](takes effect on the next /reset)[/]"
+        )
+        return
+
     new_model = args[0]
     _os.environ["ORACLE_PRIMARY_MODEL"] = new_model
     # Reload settings so downstream sees it

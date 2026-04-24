@@ -251,16 +251,31 @@ def _resolve(path: str) -> Path:
 
 @tool
 def read_file(path: str, start_line: int = 1, end_line: int = 0) -> str:
-    """Read a text file. `end_line=0` means read to the end.
+    """Read a text file with optional pagination. Returns line-numbered content.
 
-    Returns content with `N: ` line-number prefixes (so the model can edit precisely).
+    Args:
+        path: absolute path or relative to cwd.
+        start_line: 1-indexed first line to return (default 1).
+        end_line: last line, inclusive. 0 (default) or -1 means read to end.
+
+    For files larger than 10 MB, read in chunks: read_file(path, 1, 5000) then
+    read_file(path, 5001, 10000) etc. Output is prefixed with "N: " line numbers
+    so you can call apply_diff/edit_file with precise locations.
+
+    Returns "error: no such file: <path>" if missing,
+            "error: file too large" if over 10 MB (chunk by lines instead),
+            "error: start_line > file has N lines" if past EOF.
     """
     try:
         p = _resolve(path)
         if not p.exists():
             return f"error: no such file: {p}"
         if p.stat().st_size > MAX_READ_BYTES:
-            return f"error: file too large ({p.stat().st_size:,} bytes > {MAX_READ_BYTES:,})"
+            return (
+                f"error: file too large ({p.stat().st_size:,} bytes > "
+                f"{MAX_READ_BYTES:,}). For huge files, read in chunks via "
+                f"start_line/end_line, or use grep_files to search inside."
+            )
         text = p.read_text(encoding="utf-8", errors="replace")
         lines = text.splitlines()
         s = max(1, int(start_line))

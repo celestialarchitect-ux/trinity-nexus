@@ -45,7 +45,9 @@ PROVIDER_PRESETS: dict[str, dict[str, str]] = {
     },
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
-        "default_model": "llama-3.3-70b-versatile",
+        # gpt-oss-120b handles tool calls reliably; llama-3.3-70b-versatile
+        # rejects our 16+ tool schema with "Failed to call a function".
+        "default_model": "openai/gpt-oss-120b",
     },
     "together": {
         "base_url": "https://api.together.xyz/v1",

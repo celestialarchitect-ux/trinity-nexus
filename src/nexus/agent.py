@@ -20,6 +20,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
@@ -46,7 +47,55 @@ def _all_tools() -> list:
     return BUILTIN_TOOLS + [retrieve_notes]
 
 
-def _make_llm(model: str | None = None) -> ChatOllama:
+def _frontier_enabled() -> bool:
+    """True when the agent loop should route through a frontier (cloud) model.
+
+    Triggered by:
+      - env NEXUS_USE_FRONTIER=1|true|yes
+      - --frontier flag on `nexus` / `nexus ask` (sets env above)
+      - settings.oracle_use_frontier=true in .env
+    """
+    import os
+    if os.environ.get("NEXUS_USE_FRONTIER", "").lower() in {"1", "true", "yes", "on"}:
+        return True
+    return bool(getattr(settings, "oracle_use_frontier", False))
+
+
+def _make_frontier_llm(model: str | None = None) -> BaseChatModel:
+    """Build a frontier-backed (Claude/GPT/Llama-via-Groq/etc.) chat model.
+
+    Reuses NEXUS_FRONTIER_* env config and the openai_compat provider presets
+    (base_url + default model). Tool-call format is OpenAI-style; works with
+    Groq/OpenAI/OpenRouter/Together/Fireworks/DeepSeek/Mistral.
+    """
+    import os
+    from langchain_openai import ChatOpenAI
+    from nexus.runtime.backends.openai_compat import PROVIDER_PRESETS
+
+    provider = os.environ.get("NEXUS_FRONTIER_PROVIDER", "groq").lower()
+    preset = PROVIDER_PRESETS.get(provider, {})
+    base_url = (
+        os.environ.get("NEXUS_FRONTIER_BASE_URL")
+        or preset.get("base_url")
+        or "https://api.groq.com/openai/v1"
+    ).rstrip("/")
+    api_key = os.environ.get("NEXUS_FRONTIER_API_KEY", "") or "no-key-set"
+    model_name = (
+        model
+        or os.environ.get("NEXUS_FRONTIER_MODEL")
+        or preset.get("default_model")
+        or "llama-3.3-70b-versatile"
+    )
+    return ChatOpenAI(
+        model=model_name,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=0.7,
+        timeout=settings.oracle_llm_timeout_sec,
+    ).bind_tools(_all_tools())
+
+
+def _make_llm(model: str | None = None) -> BaseChatModel:
     # §13 — if a mode is active and names a preferred model, use it.
     if model is None:
         try:
@@ -56,6 +105,19 @@ def _make_llm(model: str | None = None) -> ChatOllama:
                 model = mode_model
         except Exception:
             pass
+
+    # Frontier brain — much stronger tool-use + reasoning. Used when
+    # NEXUS_USE_FRONTIER=1 (or --frontier flag, which sets that env var).
+    if _frontier_enabled():
+        try:
+            return _make_frontier_llm(model)
+        except Exception as e:
+            # Fall back to local Ollama rather than crash the agent.
+            import logging
+            logging.getLogger(__name__).warning(
+                "frontier LLM init failed (%s); falling back to local Ollama", e
+            )
+
     # keep_alive: pin the model in VRAM. ChatOllama accepts str|int|float.
     # Use int(-1) when possible (Ollama's "never unload" sentinel).
     ka_raw = settings.oracle_primary_keepalive

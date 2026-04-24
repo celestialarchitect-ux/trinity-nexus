@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import time
 
@@ -36,12 +37,15 @@ console = Console(soft_wrap=True, legacy_windows=False)
 @click.group(invoke_without_command=True)
 @click.option("--thread", default=None, help="Thread id for the REPL session (default: resume latest).")
 @click.option("--new", "new_thread", is_flag=True, help="Start a fresh thread instead of resuming latest.")
+@click.option("--frontier", is_flag=True, help="Route the agent through a frontier model (Claude/GPT/Llama-70B via Groq) instead of local Ollama.")
 @click.pass_context
-def cli(ctx: click.Context, thread: str | None, new_thread: bool):
+def cli(ctx: click.Context, thread: str | None, new_thread: bool, frontier: bool):
     """Trinity Nexus — sovereign adaptive intelligence.
 
     Run without a subcommand to enter the interactive terminal.
     """
+    if frontier:
+        os.environ["NEXUS_USE_FRONTIER"] = "1"
     if ctx.invoked_subcommand is None:
         from nexus.repl import run_repl
 
@@ -211,7 +215,8 @@ def doctor():
 @click.argument("prompt", nargs=-1, required=False)
 @click.option("--thread", default=None, help="Thread id. Default: a fresh one-shot thread per call.")
 @click.option("--stream/--no-stream", default=True)
-def ask(prompt, thread: str | None, stream: bool):
+@click.option("--frontier", is_flag=True, help="Route this ask through a frontier model (Claude/GPT/Llama-70B via Groq).")
+def ask(prompt, thread: str | None, stream: bool, frontier: bool):
     """Ask Trinity Nexus a question. Use `-` to read the prompt from stdin.
 
     By default each `nexus ask` gets a fresh one-shot thread so the CLI
@@ -220,6 +225,9 @@ def ask(prompt, thread: str | None, stream: bool):
     """
     from nexus.agent import Oracle
     import uuid as _uuid
+
+    if frontier:
+        os.environ["NEXUS_USE_FRONTIER"] = "1"
 
     if thread is None:
         thread = f"ask-{_uuid.uuid4().hex[:8]}"
@@ -239,7 +247,15 @@ def ask(prompt, thread: str | None, stream: bool):
         console.print("[yellow]empty prompt[/]")
         return
 
-    console.print(f"[dim]thread={thread} • model={settings.oracle_primary_model}[/]")
+    if os.environ.get("NEXUS_USE_FRONTIER", "").lower() in {"1", "true", "yes", "on"}:
+        _model_name = (
+            os.environ.get("NEXUS_FRONTIER_MODEL")
+            or "frontier"
+        )
+        _provider = os.environ.get("NEXUS_FRONTIER_PROVIDER", "frontier")
+        console.print(f"[dim]thread={thread} • model={_model_name} ({_provider})[/]")
+    else:
+        console.print(f"[dim]thread={thread} • model={settings.oracle_primary_model}[/]")
 
     t0 = time.perf_counter()
     oracle = Oracle(thread_id=thread)
