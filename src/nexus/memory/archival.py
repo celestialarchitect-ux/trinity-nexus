@@ -80,7 +80,12 @@ class ArchivalMemory:
     def query(self, text: str, k: int = 5) -> list[dict[str, Any]]:
         if self._table.count_rows() == 0:
             return []
-        q = self.embedder.embed(text).tolist()
+        q_arr = self.embedder.embed(text)
+        # If embedder failed (VRAM pressure etc.) it returns a zero vector.
+        # Don't bother searching — zero-vector hits are meaningless.
+        if not q_arr.any():
+            return []
+        q = q_arr.tolist()
         results = (
             self._table.search(q)
             .limit(k)

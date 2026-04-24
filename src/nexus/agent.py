@@ -147,8 +147,14 @@ def _build_system_with_context(
     if mo:
         parts.append(mo)
 
-    ctx = memory.build_context(intent, thread_id=thread_id, archival_k=4, recall_n=6)
-    parts.append(ctx.to_prompt_block())
+    try:
+        ctx = memory.build_context(intent, thread_id=thread_id, archival_k=4, recall_n=6)
+        parts.append(ctx.to_prompt_block())
+    except Exception:
+        # Memory subsystem unavailable (e.g. Ollama VRAM pressure during
+        # embedding). Skip that block — the agent still has the constitution,
+        # USER MAP, 9-tier, and mode overlay.
+        pass
 
     return SystemMessage(content="\n\n".join(parts))
 
