@@ -84,20 +84,21 @@ def _is_dangerous(cmd: str) -> str | None:
 def run_command(command: str, timeout_sec: int = 30) -> dict[str, Any]:
     """Execute a shell command. Returns {stdout, stderr, returncode}.
 
-    Safe mode (NEXUS_SAFE=1) blocks this tool entirely.
-    Destructive commands are blocked by default (§29 Security Governor). Set
-    `NEXUS_ALLOW_DANGEROUS=1` or run `/dangerous` in the REPL to unlock.
+    Blocked entirely under NEXUS_SAFE=1 or NEXUS_READONLY=1.
+    Rate-limited (NEXUS_RATE_TOOLS_PER_MIN, default 120).
+    Destructive patterns blocked unless NEXUS_ALLOW_DANGEROUS=1 (/dangerous on).
     """
-    from nexus.security import is_safe_mode as _safe
+    from nexus import security as _sec
 
-    if _safe():
-        return {
-            "stdout": "",
-            "stderr": "[blocked §29] run_command disabled under NEXUS_SAFE=1",
-            "returncode": -4,
-        }
+    if _sec.is_readonly():
+        return {"stdout": "", "stderr": "[blocked §29] read-only mode (NEXUS_READONLY=1)", "returncode": -5}
+    if _sec.is_safe_mode():
+        return {"stdout": "", "stderr": "[blocked §29] safe mode (NEXUS_SAFE=1)", "returncode": -4}
+    if not _sec.tool_call_allowed():
+        return {"stdout": "", "stderr": "[rate-limited] tool calls exceeded per-minute cap", "returncode": -6}
     danger = _is_dangerous(command)
     if danger:
+        _sec.audit("run_command_blocked", command=command, pattern=danger)
         return {
             "stdout": "",
             "stderr": (
@@ -106,13 +107,10 @@ def run_command(command: str, timeout_sec: int = 30) -> dict[str, Any]:
             ),
             "returncode": -3,
         }
+    _sec.audit("run_command", command=command)
     try:
         result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
+            command, shell=True, capture_output=True, text=True, timeout=timeout_sec,
         )
         return {
             "stdout": result.stdout[-4000:],
@@ -163,15 +161,16 @@ def read_file(path: str, start_line: int = 1, end_line: int = 0) -> str:
 def write_file(path: str, content: str) -> str:
     """Create or overwrite a file. Parent directories are created as needed.
 
-    Under NEXUS_SAFE=1, only paths matching NEXUS_WRITE_ALLOW (colon-separated
-    globs) are permitted.
+    Blocked under NEXUS_READONLY=1. Under NEXUS_SAFE=1, only paths matching
+    NEXUS_WRITE_ALLOW globs are permitted.
     """
-    from nexus.security import write_allowed as _ok
+    from nexus import security as _sec
 
     try:
         p = _resolve(path)
-        if not _ok(str(p)):
-            return f"error: [blocked §29] write to {p} not in NEXUS_WRITE_ALLOW"
+        if not _sec.write_allowed(str(p)):
+            _sec.audit("write_blocked", path=str(p))
+            return f"error: [blocked §29] write to {p} disallowed (readonly or not in NEXUS_WRITE_ALLOW)"
         if len(content.encode("utf-8")) > MAX_EDIT_BYTES:
             return f"error: content exceeds {MAX_EDIT_BYTES:,} bytes"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -183,14 +182,17 @@ def write_file(path: str, content: str) -> str:
 
 @tool
 def edit_file(path: str, old_string: str, new_string: str) -> str:
-    """Replace the first occurrence of `old_string` with `new_string` in a file.
+    """Replace the first occurrence of `old_string` with `new_string`.
 
-    First tries exact match; on whitespace-drift, normalises indentation and
-    retries. Fails if `old_string` appears zero or >1 times — caller must
-    provide enough surrounding context to make the match unique.
+    Blocked under NEXUS_READONLY=1 / NEXUS_SAFE=1 (unless path matches
+    NEXUS_WRITE_ALLOW).
     """
+    from nexus import security as _sec
+
     try:
         p = _resolve(path)
+        if not _sec.write_allowed(str(p)):
+            return f"error: [blocked §29] edit of {p} disallowed"
         if not p.exists():
             return f"error: no such file: {p}"
         text = p.read_text(encoding="utf-8")
@@ -242,14 +244,13 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
 
 @tool
 def apply_diff(path: str, search: str, replace: str) -> str:
-    """SEARCH/REPLACE-block edit — aider's format, more robust than edit_file.
+    """SEARCH/REPLACE edit (aider-style). Blocked under read-only / safe mode."""
+    from nexus import security as _sec
 
-    `search` is the exact current text (must match once). `replace` is what
-    replaces it. Use this when edit_file fails due to drift or when you want
-    to make a clearly-bounded change. Returns a line-count delta on success.
-    """
     try:
         p = _resolve(path)
+        if not _sec.write_allowed(str(p)):
+            return f"error: [blocked §29] diff to {p} disallowed"
         if not p.exists():
             return f"error: no such file: {p}"
         text = p.read_text(encoding="utf-8")

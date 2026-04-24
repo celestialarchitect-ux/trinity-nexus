@@ -33,11 +33,15 @@ def _path(thread_id: str) -> Path:
 
 
 def log(thread_id: str, kind: str, **data: Any) -> None:
-    """Append a single event. Never raises."""
+    """Append a single event. Never raises. Secrets auto-redacted."""
     if not _enabled():
         return
     try:
-        record = {"ts": time.time(), "kind": kind, **data}
+        from nexus.security import redact
+
+        # Strip secrets from any string-valued fields before persisting
+        safe_data = {k: (redact(v) if isinstance(v, str) else v) for k, v in data.items()}
+        record = {"ts": time.time(), "kind": kind, **safe_data}
         with _path(thread_id).open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, default=str) + "\n")
     except Exception:

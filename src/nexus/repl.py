@@ -53,6 +53,10 @@ HELP_TEXT = """\
   /spawn <task>        run a sub-agent on a self-contained task (§19)
   /dangerous [on|off]  toggle destructive-command unlock (§29)
   /safe [on|off]       hard lockdown: no run_command, write globs only
+  /readonly [on|off]   total read-only — zero mutation tools
+  /rate                show per-minute rate-limit status
+  /encrypt [status|unlock|setup <passphrase>]
+                       at-rest encryption for protected tier (§06.7)
   /permissions [list|allow <tool> <p>|deny <tool> <p>|remove <t> <p>]
                        per-tool glob permissions (§29)
   /allow <tool> <pat>  shortcut: allow tool:pattern
@@ -751,6 +755,58 @@ def _handle_dangerous(args: list[str], console: Console) -> None:
         console.print(f"destructive ops: {state} · /dangerous on|off to toggle")
 
 
+def _handle_readonly(args: list[str], console: Console) -> None:
+    """/readonly [on|off] — kill all mutation tools (§29)."""
+    target = (args[0].lower() if args else None)
+    current = os.environ.get("NEXUS_READONLY") == "1"
+    if target == "on":
+        os.environ["NEXUS_READONLY"] = "1"
+        console.print("[bold #7cffb0]READ-ONLY ON[/] · no write_file / edit / run_command · reads OK")
+    elif target == "off":
+        os.environ.pop("NEXUS_READONLY", None)
+        console.print("[#c77dff]read-only OFF[/] · write tools restored")
+    else:
+        state = "[#7cffb0]ON[/]" if current else "[dim]off[/]"
+        console.print(f"read-only mode: {state} · /readonly on|off to toggle")
+
+
+def _handle_rate(console: Console) -> None:
+    """/rate — show current per-minute rate-limit status."""
+    from nexus.security import rate_status
+
+    s = rate_status()
+    console.print()
+    console.print("[bold #c77dff]rate limits[/]  (per minute, sliding window)")
+    console.print(f"  tools: [cyan]{s['tools_remaining_this_min']}[/] / {s['tools_limit']} remaining")
+    console.print(f"  llm  : [cyan]{s['llm_remaining_this_min']}[/] / {s['llm_limit']} remaining")
+    console.print()
+    console.print("[dim]tune via NEXUS_RATE_TOOLS_PER_MIN / NEXUS_RATE_LLM_PER_MIN[/]")
+
+
+def _handle_encrypt(args: list[str], console: Console) -> None:
+    """/encrypt [status|unlock <passphrase>|setup] — at-rest encryption for
+    protected tier (§06.7)."""
+    from nexus import security as _sec
+
+    sub = (args[0].lower() if args else "status")
+    if sub == "status":
+        state = "[#7cffb0]unlocked[/]" if _sec.is_unlocked() else "[dim]locked[/]"
+        console.print(f"encryption: {state}")
+        console.print("[dim]commands:[/]")
+        console.print("[dim]  /encrypt unlock <passphrase>   derive key + verify[/]")
+        console.print("[dim]  /encrypt setup <passphrase>    first-time setup[/]")
+        return
+    if sub in {"unlock", "setup"} and len(args) >= 2:
+        passphrase = " ".join(args[1:])
+        ok = _sec.unlock_session(passphrase)
+        if ok:
+            console.print("[#7cffb0]session unlocked[/] · encrypted tiers readable this session")
+        else:
+            console.print("[red]wrong passphrase[/] · probe decryption failed")
+    else:
+        console.print("[yellow]usage: /encrypt [status|unlock <passphrase>][/]")
+
+
 def _handle_safe(args: list[str], console: Console) -> None:
     """/safe [on|off] — hard lockdown (§29). Blocks run_command, restricts writes."""
     target = (args[0].lower() if args else None)
@@ -940,6 +996,15 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                     continue
                 if cmd == "/safe":
                     _handle_safe(args, console)
+                    continue
+                if cmd == "/readonly":
+                    _handle_readonly(args, console)
+                    continue
+                if cmd == "/rate":
+                    _handle_rate(console)
+                    continue
+                if cmd == "/encrypt":
+                    _handle_encrypt(args, console)
                     continue
                 if cmd in {"/permissions", "/perm", "/perms"}:
                     _handle_permissions(args, console)
