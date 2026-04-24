@@ -4,7 +4,26 @@ version = "1.0.0"
 description = "Trinity Nexus — sovereign adaptive intelligence (Omega Foundation)"
 requires-python = ">=3.12"
 readme = "README.md"
+license = { text = "MIT" }
 authors = [{ name = "Trinity Intelligence Network" }]
+keywords = [
+    "ai", "agent", "llm", "local-first", "sovereign", "terminal",
+    "claude-code-alternative", "ollama", "langgraph", "rag", "mcp",
+    "trinity-nexus",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: System :: Shells",
+]
 
 dependencies = [
     # LLM + orchestration
@@ -62,6 +81,12 @@ mesh = [
 [project.scripts]
 nexus = "nexus.cli:cli"
 oracle = "nexus.cli:cli"  # legacy alias
+
+[project.urls]
+Homepage = "https://github.com/celestialarchitect-ux/trinity-nexus"
+Repository = "https://github.com/celestialarchitect-ux/trinity-nexus"
+Issues = "https://github.com/celestialarchitect-ux/trinity-nexus/issues"
+Changelog = "https://github.com/celestialarchitect-ux/trinity-nexus/releases"
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
