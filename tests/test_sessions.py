@@ -42,6 +42,23 @@ def test_log_read_list(tmp_path, monkeypatch):
     assert events[2]["kind"] == "tool_call"
 
 
+def test_title_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("ORACLE_HOME", str(tmp_path))
+    monkeypatch.setenv("NEXUS_RECORD", "1")
+    import importlib
+    from nexus import config as cfg
+    importlib.reload(cfg)
+    from nexus import sessions
+    importlib.reload(sessions)
+
+    assert sessions.get_title("new-thread") is None
+    sessions.set_title("new-thread", "first-title")
+    assert sessions.get_title("new-thread") == "first-title"
+    # Adding later events doesn't break retrieval
+    sessions.log("new-thread", "user", content="hi")
+    assert sessions.get_title("new-thread") == "first-title"
+
+
 def test_thread_id_sanitised(tmp_path, monkeypatch):
     monkeypatch.setenv("ORACLE_HOME", str(tmp_path))
     monkeypatch.setenv("NEXUS_RECORD", "1")

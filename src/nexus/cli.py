@@ -68,9 +68,42 @@ def cli(ctx: click.Context, thread: str | None, new_thread: bool):
 
 
 @cli.command()
-def version():
-    """Print Trinity Nexus version."""
+@click.option("--check", is_flag=True, help="Check PyPI for a newer release.")
+def version(check: bool):
+    """Print Trinity Nexus version (or check PyPI for an update)."""
     console.print(f"[bold #c77dff]trinity-nexus[/] [dim]v{__version__}[/] [dim](omega foundation)[/]")
+    if check:
+        try:
+            import httpx as _httpx
+            r = _httpx.get("https://pypi.org/pypi/trinity-nexus/json", timeout=5.0)
+            r.raise_for_status()
+            latest = r.json()["info"]["version"]
+            if latest == __version__:
+                console.print(f"[dim]you're on the latest (v{latest}).[/]")
+            else:
+                console.print(
+                    f"[#7cffb0]update available: v{latest}[/]  "
+                    f"[dim](you have v{__version__}) · run[/] [bold]nexus upgrade[/]"
+                )
+        except Exception as e:
+            console.print(f"[dim](couldn't reach PyPI: {e})[/]")
+
+
+@cli.command()
+def upgrade():
+    """Pull the latest trinity-nexus from PyPI via pip (or pipx if installed that way)."""
+    import subprocess as _sp
+    import sys as _sys
+    # Detect pipx vs pip install by inspecting sys.executable path
+    exe = _sys.executable
+    is_pipx = "pipx" in exe.lower()
+    args = (
+        ["pipx", "upgrade", "trinity-nexus"]
+        if is_pipx
+        else [exe, "-m", "pip", "install", "--upgrade", "trinity-nexus"]
+    )
+    console.print(f"[dim]{' '.join(args)}[/]")
+    _sp.run(args)
 
 
 @cli.command()
@@ -734,6 +767,59 @@ def mesh_pull(peer_url: str):
     console.print(f"[bold]pulling[/] from {peer_url}")
     report = pull_bundle(peer_url=peer_url)
     console.print_json(json.dumps(report))
+
+
+@mesh.command("discover")
+@click.option("--timeout", default=5.0, help="Seconds to scan for peers.")
+def mesh_discover(timeout: float):
+    """Scan the LAN for Trinity Nexus peers (mDNS / Bonjour)."""
+    from nexus.mesh import discover as _d
+
+    if not _d._have_zeroconf():
+        console.print(
+            "[yellow]zeroconf not installed[/]  "
+            "run: pip install zeroconf"
+        )
+        return
+    console.print(f"[dim]scanning {timeout}s…[/]")
+    peers = _d.discover(timeout=timeout)
+    if not peers:
+        console.print("[dim]no peers on the LAN yet. Tell a peer to run `nexus mesh listen`.[/]")
+        return
+    for p in peers:
+        console.print(
+            f"  [cyan]{p.label or p.name}[/]  @ {p.host}:{p.port}  "
+            f"[dim]{p.pubkey[:20]}…[/]"
+        )
+
+
+@mesh.command("listen")
+@click.option("--port", default=8899, help="Port to advertise (doesn't have to be running).")
+def mesh_listen(port: int):
+    """Announce this node on the LAN via mDNS. Keeps running until Ctrl-C."""
+    from nexus.mesh import discover as _d
+
+    if not _d._have_zeroconf():
+        console.print("[yellow]zeroconf not installed[/]  run: pip install zeroconf")
+        return
+    zc = _d.announce(port=port)
+    if zc is None:
+        console.print("[red]failed to start mDNS announcer[/]")
+        return
+    console.print(f"[#7cffb0]announcing[/] Trinity Nexus on this LAN at :{port}")
+    console.print("[dim]Ctrl-C to stop[/]")
+    try:
+        import time as _t
+        while True:
+            _t.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            zc.close()
+        except Exception:
+            pass
+        console.print("[dim]stopped.[/]")
 
 
 @cli.command()

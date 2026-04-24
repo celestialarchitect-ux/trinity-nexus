@@ -122,6 +122,27 @@ def _build_system_with_context(
     except Exception:
         pass
 
+    # Graph context — include 1-hop neighbors of entities the user mentions,
+    # if any match the graph. Lightweight; no LLM calls, just a SQLite BFS.
+    try:
+        from nexus import graph as _g
+        # Heuristic: capitalized nouns in the intent that are 2+ chars.
+        import re as _re
+        candidates = list({*_re.findall(r"\b[A-Z][A-Za-z][A-Za-z0-9_\- ]{1,30}\b", intent or "")})[:6]
+        graph_lines: list[str] = []
+        for entity in list(candidates)[:3]:
+            r = _g.query(entity, depth=1, limit=8)
+            if r.get("matches"):
+                for e in r["edges"][:5]:
+                    graph_lines.append(f"- {e['from']} —{e['kind']}→ {e['to']}")
+        if graph_lines:
+            parts.append(
+                "## GRAPH CONTEXT (personal knowledge graph, 1-hop neighbors)\n"
+                + "\n".join(graph_lines)
+            )
+    except Exception:
+        pass
+
     mo = mode_overlay()
     if mo:
         parts.append(mo)

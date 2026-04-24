@@ -1,6 +1,6 @@
 [project]
 name = "trinity-nexus"
-version = "1.0.7"
+version = "1.0.8"
 description = "Trinity Nexus — sovereign adaptive intelligence (Omega Foundation)"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -73,7 +73,8 @@ training = [
     "accelerate>=1.0.0",
 ]
 mesh = [
-    # libp2p mesh (Week 3)
+    # LAN peer discovery (mDNS / Bonjour)
+    "zeroconf>=0.135.0",
     "pynacl>=1.5.0",
     "cryptography>=43.0.0",
 ]
