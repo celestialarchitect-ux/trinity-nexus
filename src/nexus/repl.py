@@ -22,6 +22,10 @@ from prompt_toolkit.keys import Keys
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.text import Text as RichText
 
 from nexus import __version__
 from nexus import hooks as _hooks
@@ -168,6 +172,10 @@ def _bottom_toolbar_factory(get_state):
             f"mode {state['mode'] or 'free'}",
             f"thread {state['thread']}",
         ]
+        ctx_pct = state.get("ctx_pct")
+        if ctx_pct is not None:
+            color = ""  # can't style plain-text toolbar easily
+            parts.append(f"ctx {ctx_pct:.0f}%")
         if state.get("safe"):
             parts.append("SAFE")
         if state.get("readonly"):
@@ -286,6 +294,95 @@ def _condense_tool_result(content: str) -> str:
     return one[:160] + ("…" if len(one) > 160 else "")
 
 
+def _echo_user_message(console: Console, text: str) -> None:
+    """Render the user's message as a purple-accented panel right after send.
+
+    Skips hidden-prefix messages (attachments expanded inline are noisy) and
+    collapses multi-line pastes to the first few lines + a line count.
+    """
+    preview = text.strip()
+    # If there's an expanded file block, show the raw user line not the
+    # attached content (which already got announced via "attached @...")
+    if "<FILE path=" in preview:
+        preview = preview.split("<FILE", 1)[0].rstrip()
+        if not preview:
+            return
+    lines = preview.splitlines()
+    if len(lines) > 6:
+        preview = "\n".join(lines[:6]) + f"\n… ({len(lines)} lines total)"
+
+    panel = Panel(
+        RichText(preview, style="#e8d4ff"),
+        border_style="#c77dff",
+        padding=(0, 1),
+        expand=False,
+    )
+    console.print(panel)
+
+
+def _render_diff(console: Console, d: dict) -> None:
+    """Print a colorized unified diff for a recorded file mutation."""
+    import difflib as _dl
+    from pathlib import Path as _P
+
+    path = d["path"]
+    rel = path
+    try:
+        rel = str(_P(path).resolve().relative_to(_P.cwd()))
+    except Exception:
+        pass
+
+    diff_lines = list(_dl.unified_diff(
+        d["before"].splitlines(keepends=True),
+        d["after"].splitlines(keepends=True),
+        fromfile=f"a/{rel}",
+        tofile=f"b/{rel}",
+        n=3,
+    ))
+    if not diff_lines:
+        console.print(f"  [#7cffb0]✓[/] [dim]{d['action']} {rel} (no change)[/]")
+        return
+
+    # Trim giant diffs
+    MAX_DIFF_LINES = 120
+    trimmed = False
+    if len(diff_lines) > MAX_DIFF_LINES:
+        diff_lines = diff_lines[:MAX_DIFF_LINES]
+        trimmed = True
+
+    body = RichText()
+    for line in diff_lines:
+        line = line.rstrip("\n")
+        if line.startswith("+++") or line.startswith("---"):
+            body.append(line + "\n", style="dim")
+        elif line.startswith("@@"):
+            body.append(line + "\n", style="#c77dff")
+        elif line.startswith("+"):
+            body.append(line + "\n", style="#7cffb0")
+        elif line.startswith("-"):
+            body.append(line + "\n", style="#ff6a6a")
+        else:
+            body.append(line + "\n", style="dim")
+    if trimmed:
+        body.append(f"…[diff truncated at {MAX_DIFF_LINES} lines]\n", style="dim")
+
+    title = f"{d['action']} · {rel}"
+    panel = Panel(body, title=title, border_style="#9d00ff", padding=(0, 1), expand=False)
+    console.print(panel)
+
+
+def _render_error(console: Console, *, where: str, err: BaseException) -> None:
+    body = RichText()
+    body.append(f"{type(err).__name__}: {err}\n", style="#ff6a6a")
+    body.append("REPL is fine — keep going, /help for commands, /exit to leave.", style="dim")
+    panel = Panel(body, title=f"error · {where}", border_style="#ff6a6a", padding=(0, 1), expand=False)
+    console.print(panel)
+
+
+def _render_turn_separator(console: Console) -> None:
+    console.print(Rule(style="dim #3a2a5a"))
+
+
 def _stream_answer(oracle, prompt: str, console: Console) -> str:
     """Token-by-token streaming Claude-Code-style, with esoteric thinking verbs.
 
@@ -319,11 +416,14 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                     content_preview = evt.get("content", "")
                     tool_name = evt.get("name", "")
                     thinking.pause()
-                    # Diff-style render for file-edit results (§17 + Claude-Code parity)
-                    if tool_name in {"edit_file", "apply_diff", "write_file"} and "edited" in content_preview.lower() or tool_name == "apply_diff" and "applied diff" in content_preview.lower():
-                        # Best-effort green check line — the actual before/after
-                        # diff lives on disk; print a one-liner summary.
-                        console.print(f"  [#7cffb0]✓[/] [dim]{_condense_tool_result(content_preview)}[/]")
+                    # Real diff rendering for file mutations (§17 + Claude-Code parity)
+                    from nexus.tools import pop_recent_diff as _pop
+                    if tool_name in {"edit_file", "apply_diff", "write_file"}:
+                        d = _pop()
+                        if d is not None:
+                            _render_diff(console, d)
+                        else:
+                            console.print(f"  [#7cffb0]✓[/] [dim]{_condense_tool_result(content_preview)}[/]")
                     else:
                         console.print(
                             f"  [dim]⎿[/] [dim]{_condense_tool_result(content_preview)}[/]"
@@ -1188,14 +1288,25 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
     def _state():
         import os as _os
         from nexus import cost as _cost
+        from nexus import sessions as _sess
         from nexus.modes import get_active as _active_mode
         m = _active_mode()
         c = _cost.session_total(thread)
+        # Rough ctx-usage estimate: count chars in recent session events vs num_ctx*4 (4 chars/token heuristic).
+        ctx_pct = None
+        try:
+            events = _sess.read_thread(thread, limit=80)
+            used_chars = sum(len(str(e.get("content", ""))) for e in events)
+            budget_chars = settings.oracle_num_ctx * 4
+            ctx_pct = min(100.0, 100.0 * used_chars / max(1, budget_chars))
+        except Exception:
+            pass
         return {
             "instance": getattr(settings, "oracle_instance", "Nexus"),
             "model": settings.oracle_primary_model,
             "mode": m.name if m else None,
             "thread": thread,
+            "ctx_pct": ctx_pct,
             "safe": _os.environ.get("NEXUS_SAFE") == "1",
             "readonly": _os.environ.get("NEXUS_READONLY") == "1",
             "dangerous": _os.environ.get("NEXUS_ALLOW_DANGEROUS") == "1",
@@ -1440,10 +1551,7 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                     console.print(f"[yellow]unknown command: {cmd}[/]  try /help")
                     continue
               except Exception as e:
-                console.print(
-                    f"[red]command failed[/] {type(e).__name__}: {e}"
-                )
-                console.print("[dim](REPL is fine — try /help to list commands)[/]")
+                _render_error(console, where=f"command {cmd}", err=e)
                 try:
                     from nexus import security as _sec
                     _sec.audit("slash_failed", cmd=cmd, error=f"{type(e).__name__}: {e}")
@@ -1451,18 +1559,24 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                     pass
                 continue
 
+            # Echo the user's message in a styled panel (Claude-Code-style).
+            _echo_user_message(console, user_in)
+
             # Chat turn — §31: catch any stream / tool / render error so
             # one bad turn never exits the REPL.
             t0 = time.perf_counter()
             try:
                 _stream_answer(oracle, user_in, console)
-                console.print(f"[dim]({time.perf_counter() - t0:.1f}s)[/]\n")
+                dt = time.perf_counter() - t0
+                console.print(f"[dim]  {dt:.1f}s[/]")
+                _render_turn_separator(console)
             except KeyboardInterrupt:
-                console.print("\n[dim](stream interrupted · type /exit to leave)[/]\n")
+                console.print("\n[dim](stream interrupted · type /exit to leave)[/]")
+                _render_turn_separator(console)
             except Exception as e:
                 import traceback as _tb
-                console.print(f"\n[red]turn failed[/] {type(e).__name__}: {e}")
-                console.print("[dim](REPL is fine — keep going, or /exit to leave)[/]")
+                _render_error(console, where="turn", err=e)
+                _render_turn_separator(console)
                 try:
                     from nexus import security as _sec
                     _sec.audit("turn_failed", error=f"{type(e).__name__}: {e}",

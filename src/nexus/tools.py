@@ -34,6 +34,33 @@ def _sys_stdin_is_tty() -> bool:
         return False
 
 
+# Module-level buffer of recent file mutations so the REPL can render
+# real unified diffs after the tool returns. Each entry:
+#   {"path": str, "before": str, "after": str, "action": str, "ts": float}
+# Bounded; oldest gets dropped.
+_DIFF_BUFFER: list[dict] = []
+
+
+def _record_diff(path: Path, before: str, after: str, action: str) -> None:
+    import time as _t
+    _DIFF_BUFFER.append({
+        "path": str(path),
+        "before": before,
+        "after": after,
+        "action": action,
+        "ts": _t.time(),
+    })
+    # keep last 20
+    del _DIFF_BUFFER[:-20]
+
+
+def pop_recent_diff() -> dict | None:
+    """Called by the REPL — returns and removes the most recent recorded diff."""
+    if _DIFF_BUFFER:
+        return _DIFF_BUFFER.pop()
+    return None
+
+
 def _auto_commit(path: Path, action: str) -> None:
     """If NEXUS_AUTO_COMMIT=1 and path lives inside a git repo, commit the change."""
     if os.environ.get("NEXUS_AUTO_COMMIT") != "1":
@@ -235,7 +262,9 @@ def write_file(path: str, content: str) -> str:
         if len(content.encode("utf-8")) > MAX_EDIT_BYTES:
             return f"error: content exceeds {MAX_EDIT_BYTES:,} bytes"
         p.parent.mkdir(parents=True, exist_ok=True)
+        before = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
         p.write_text(content, encoding="utf-8")
+        _record_diff(p, before, content, "write")
         _auto_commit(p, "write")
         return f"wrote {len(content)} chars to {p}"
     except Exception as e:
@@ -262,7 +291,9 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
         # Exact
         count = text.count(old_string)
         if count == 1:
-            p.write_text(text.replace(old_string, new_string, 1), encoding="utf-8")
+            new_text = text.replace(old_string, new_string, 1)
+            p.write_text(new_text, encoding="utf-8")
+            _record_diff(p, text, new_text, "edit")
             _auto_commit(p, "edit")
             return f"edited {p} (1 replacement)"
         if count > 1:
@@ -330,7 +361,9 @@ def apply_diff(path: str, search: str, replace: str) -> str:
             return "error: search block not found"
         if count > 1:
             return f"error: search block appears {count} times — widen the context"
-        p.write_text(text.replace(search, replace, 1), encoding="utf-8")
+        new_text = text.replace(search, replace, 1)
+        p.write_text(new_text, encoding="utf-8")
+        _record_diff(p, text, new_text, "diff")
         _auto_commit(p, "diff")
         delta = replace.count("\n") - search.count("\n")
         sign = "+" if delta >= 0 else ""
