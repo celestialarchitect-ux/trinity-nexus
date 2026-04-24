@@ -34,6 +34,34 @@ def _sys_stdin_is_tty() -> bool:
         return False
 
 
+def _confirm_write(path: Path, action: str) -> bool:
+    """Inline y/N prompt for write-family tools.
+
+    Default: allow (smooth flow, like Claude Code's auto-accept).
+    Strict mode: set NEXUS_CONFIRM_WRITES=1 to force a y/N before each write.
+    In strict mode, "a" answers auto-approve the rest of the session.
+    """
+    if os.environ.get("NEXUS_CONFIRM_WRITES") != "1":
+        return True
+    if os.environ.get("NEXUS_AUTO_APPROVE") == "1":
+        return True
+    if not _sys_stdin_is_tty():
+        return True
+    import sys as _sys
+    print(
+        f"\n[§29] {action} → {path}\nproceed? y/N/a(ll for session): ",
+        end="", flush=True,
+    )
+    try:
+        reply = _sys.stdin.readline().strip().lower()
+    except Exception:
+        reply = ""
+    if reply in {"a", "all"}:
+        os.environ["NEXUS_AUTO_APPROVE"] = "1"
+        return True
+    return reply in {"y", "yes"}
+
+
 # Module-level buffer of recent file mutations so the REPL can render
 # real unified diffs after the tool returns. Each entry:
 #   {"path": str, "before": str, "after": str, "action": str, "ts": float}
@@ -261,6 +289,8 @@ def write_file(path: str, content: str) -> str:
             return f"error: [blocked §29] write to {p} disallowed (readonly or not in NEXUS_WRITE_ALLOW)"
         if len(content.encode("utf-8")) > MAX_EDIT_BYTES:
             return f"error: content exceeds {MAX_EDIT_BYTES:,} bytes"
+        if not _confirm_write(p, "write"):
+            return f"error: [declined] user did not confirm write to {p}"
         p.parent.mkdir(parents=True, exist_ok=True)
         before = p.read_text(encoding="utf-8", errors="replace") if p.exists() else ""
         p.write_text(content, encoding="utf-8")
@@ -291,6 +321,8 @@ def edit_file(path: str, old_string: str, new_string: str) -> str:
         # Exact
         count = text.count(old_string)
         if count == 1:
+            if not _confirm_write(p, "edit"):
+                return f"error: [declined] user did not confirm edit to {p}"
             new_text = text.replace(old_string, new_string, 1)
             p.write_text(new_text, encoding="utf-8")
             _record_diff(p, text, new_text, "edit")
@@ -720,3 +752,11 @@ BUILTIN_TOOLS = [
     frontier_ask,
     browser_task,
 ]
+
+# Graph memory tool — imported here so BUILTIN_TOOLS + retrieve_graph are
+# exposed uniformly via the agent's _all_tools().
+try:
+    from nexus.graph import retrieve_graph as _retrieve_graph
+    BUILTIN_TOOLS.append(_retrieve_graph)
+except Exception:
+    pass

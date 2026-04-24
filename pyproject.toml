@@ -1,6 +1,6 @@
 [project]
 name = "trinity-nexus"
-version = "1.0.6"
+version = "1.0.7"
 description = "Trinity Nexus — sovereign adaptive intelligence (Omega Foundation)"
 requires-python = ">=3.12"
 readme = "README.md"

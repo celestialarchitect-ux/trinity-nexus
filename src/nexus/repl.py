@@ -9,6 +9,7 @@ streaming with esoteric thinking verbs.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -110,6 +111,10 @@ HELP_TEXT = """\
                        inspect or edit .env settings inline
   /replay <thread>     re-run a past session's user turns against
                        current model (side-by-side comparison)
+  /graph <entity> [depth]     BFS through the personal knowledge graph
+  /graph ingest [thread_id]   extract triples from a thread
+  /code-agent <task>   run smolagents-style code-writing agent loop
+                       (model writes Python that calls the tools)
   /onboard             walk §04/§23/§24 orientation to build the USER MAP
   /user-map            print the active USER MAP
   /mode [name|list|off] switch operating mode (§13). Names: architect,
@@ -450,23 +455,31 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                         thinking = None
                         shown_first_text = True
                         final_text = chunk
+                        # code-theme="monokai" gives readable syntax highlighting
+                        # in streamed code blocks; ▋ is a typing-cursor suffix.
                         live = Live(
-                            Markdown(final_text), console=console, refresh_per_second=12
+                            Markdown(final_text + " ▋", code_theme="monokai"),
+                            console=console,
+                            refresh_per_second=15,
+                            vertical_overflow="visible",
                         )
                         live.__enter__()
                     else:
                         final_text += chunk
                         if live is not None:
-                            live.update(Markdown(final_text))
+                            live.update(Markdown(final_text + " ▋", code_theme="monokai"))
                 elif t == "final":
+                    # Drop the typing cursor from the final frame.
+                    if live is not None and final_text:
+                        live.update(Markdown(final_text, code_theme="monokai"))
                     # If the whole answer came through a non-streaming path
                     # (no `token` events), render it now.
-                    if not shown_first_text and evt.get("text"):
+                    elif not shown_first_text and evt.get("text"):
                         if thinking is not None:
                             thinking.pause()
                             thinking = None
                         final_text = evt["text"]
-                        console.print(Markdown(final_text))
+                        console.print(Markdown(final_text, code_theme="monokai"))
         else:
             # Fallback path (should be rare) — use the old message stream
             seen: set[str] = set()
@@ -894,7 +907,7 @@ def _handle_rewind(args: list[str], console: Console, oracle, thread: str) -> in
 
 
 def _handle_sessions(console: Console) -> None:
-    """/sessions — list past threads."""
+    """/sessions — list past threads with titles."""
     from nexus import sessions as _s
 
     threads = _s.list_threads()
@@ -904,9 +917,15 @@ def _handle_sessions(console: Console) -> None:
     console.print()
     console.print(f"[bold #c77dff]sessions[/] · {len(threads)}")
     for tid in threads[-30:]:
-        events = _s.read_thread(tid, limit=1)
-        first = events[0] if events else {}
-        console.print(f"  [cyan]{tid}[/]  [dim]{first.get('kind', '')}[/]")
+        title = _s.get_title(tid) or ""
+        # Grab the first user line if no title
+        if not title:
+            events = _s.read_thread(tid, limit=5)
+            for e in events:
+                if e.get("kind") == "user":
+                    title = str(e.get("content", ""))[:60].splitlines()[0]
+                    break
+        console.print(f"  [cyan]{tid:32s}[/]  [dim]{title}[/]")
     console.print()
     console.print("[dim]/resume <thread_id> to jump back[/]")
 
@@ -1463,6 +1482,52 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                 if cmd == "/trace":
                     _handle_trace(console)
                     continue
+                if cmd in {"/code-agent", "/code_agent", "/codeagent"}:
+                    from nexus import code_agent as _ca
+                    task_text = " ".join(args) if args else ""
+                    if not task_text:
+                        console.print("[yellow]usage: /code-agent <task>[/]")
+                        continue
+                    console.print(f"[dim]code-agent: {task_text}[/]")
+                    with Thinking(console) as th:
+                        th.set_verb("Weaving")
+                        res = _ca.run(task_text, max_iterations=5)
+                    for step, act in enumerate(res.actions, 1):
+                        console.print(f"[dim]--- step {step} ---[/]")
+                        console.print(Syntax(act["code"], "python", theme="monokai", line_numbers=False))
+                        if act.get("stdout"):
+                            console.print(f"[dim]stdout:[/] {act['stdout'][:500]}")
+                        if act.get("error"):
+                            console.print(f"[red]error:[/] {act['error'][:500]}")
+                    if res.final:
+                        console.print(Panel(Markdown(res.final, code_theme="monokai"),
+                                             title="final", border_style="#9d00ff"))
+                    continue
+                if cmd == "/graph":
+                    from nexus import graph as _g
+                    if not args:
+                        console.print_json(json.dumps(_g.stats()))
+                        console.print("[dim]/graph <entity> [depth]  /graph ingest[/]")
+                    elif args[0] == "ingest":
+                        tid = args[1] if len(args) > 1 else thread
+                        console.print(f"[dim]ingesting {tid}…[/]")
+                        r = _g.ingest_thread(tid)
+                        console.print_json(json.dumps(r))
+                    else:
+                        ent = args[0]
+                        depth = int(args[1]) if len(args) > 1 and args[1].isdigit() else 2
+                        r = _g.query(ent, depth=depth)
+                        if r["matches"] == 0:
+                            console.print(f"[yellow]no entity like {ent!r}[/]")
+                        else:
+                            console.print(f"[bold #c77dff]{r['entity']}[/] · "
+                                          f"{len(r['neighbors'])} neighbors")
+                            for e in r["edges"][:20]:
+                                console.print(
+                                    f"  [cyan]{e['from']}[/] "
+                                    f"[dim]—{e['kind']}→[/] [cyan]{e['to']}[/]"
+                                )
+                    continue
                 if cmd == "/model":
                     _handle_model(args, console)
                     continue
@@ -1561,6 +1626,15 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
 
             # Echo the user's message in a styled panel (Claude-Code-style).
             _echo_user_message(console, user_in)
+
+            # Auto-title the session on the first real user turn.
+            try:
+                from nexus import sessions as _sessions_mod
+                from nexus.config import settings as _s
+                if _sessions_mod.get_title(thread) is None:
+                    _sessions_mod.ensure_title(thread, user_in, _s.oracle_fast_model)
+            except Exception:
+                pass
 
             # Chat turn — §31: catch any stream / tool / render error so
             # one bad turn never exits the REPL.

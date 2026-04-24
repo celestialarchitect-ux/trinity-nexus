@@ -319,6 +319,68 @@ def frontier_models(provider):
     console.print(t)
 
 
+@cli.group()
+def graph():
+    """Personal knowledge graph — GraphRAG-style triples."""
+
+
+@graph.command("ingest")
+@click.argument("thread_id", required=False)
+def graph_ingest(thread_id):
+    """Extract (entity, relation, entity) triples from one or all threads."""
+    from nexus import graph as _g
+
+    if thread_id:
+        console.print(f"[dim]ingesting thread {thread_id}…[/]")
+        r = _g.ingest_thread(thread_id)
+    else:
+        console.print("[dim]ingesting ALL threads — this can take a while…[/]")
+        r = _g.ingest_all()
+    console.print_json(json.dumps(r))
+
+
+@graph.command("query")
+@click.argument("entity")
+@click.option("--depth", default=2, help="How many hops out to traverse.")
+def graph_query(entity, depth):
+    """BFS from an entity. Prints neighbors + the edges that connect them."""
+    from nexus import graph as _g
+
+    r = _g.query(entity, depth=depth)
+    if r["matches"] == 0:
+        console.print(f"[yellow]no entity matching {entity!r}[/]")
+        return
+    console.print(
+        f"[bold #c77dff]{r['entity']}[/] · {len(r['neighbors'])} neighbors · {len(r['edges'])} edges"
+    )
+    for e in r["edges"][:30]:
+        console.print(f"  [cyan]{e['from']}[/] —[dim]{e['kind']}[/]→ [cyan]{e['to']}[/]")
+
+
+@graph.command("stats")
+def graph_stats():
+    from nexus import graph as _g
+
+    console.print_json(json.dumps(_g.stats()))
+
+
+@cli.command("optimize-prompt")
+@click.option("--section", default=14, type=int, help="Section number to mutate (non-frozen sections only).")
+@click.option("--iterations", default=3, type=int)
+@click.option("--variations", default=3, type=int)
+@click.option("--apply", is_flag=True, help="If the best candidate beats baseline, write it into prompts.py (keeps backup).")
+def optimize_prompt(section: int, iterations: int, variations: int, apply: bool):
+    """Evolutionary prompt optimizer — mutate a section + score vs the 3-gate eval."""
+    from nexus import optimizer as _opt
+
+    console.print(f"[dim]optimizing §{section} · {iterations} iterations · {variations} variations each[/]")
+    r = _opt.optimize(
+        section_num=section, iterations=iterations,
+        variations_per_iter=variations, apply=apply,
+    )
+    console.print_json(json.dumps(r, indent=2))
+
+
 @cli.command()
 @click.argument("thread_id")
 @click.option("--limit", default=40, help="Max user turns to replay.")
