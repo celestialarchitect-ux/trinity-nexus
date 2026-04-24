@@ -209,11 +209,20 @@ def doctor():
 
 @cli.command()
 @click.argument("prompt", nargs=-1, required=False)
-@click.option("--thread", default="default")
+@click.option("--thread", default=None, help="Thread id. Default: a fresh one-shot thread per call.")
 @click.option("--stream/--no-stream", default=True)
-def ask(prompt, thread: str, stream: bool):
-    """Ask Trinity Nexus a question. Use `-` to read the prompt from stdin."""
+def ask(prompt, thread: str | None, stream: bool):
+    """Ask Trinity Nexus a question. Use `-` to read the prompt from stdin.
+
+    By default each `nexus ask` gets a fresh one-shot thread so the CLI
+    doesn't pollute the persistent REPL thread (LangGraph checkpoints
+    accumulate indefinitely). Pass --thread <id> to target a specific thread.
+    """
     from nexus.agent import Oracle
+    import uuid as _uuid
+
+    if thread is None:
+        thread = f"ask-{_uuid.uuid4().hex[:8]}"
 
     if prompt and list(prompt) == ["-"]:
         question = sys.stdin.read().strip()

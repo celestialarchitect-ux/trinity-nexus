@@ -175,12 +175,40 @@ class Oracle:
         sys_msg = _build_system_with_context(self.memory, prompt, self.thread_id)
         return [sys_msg, HumanMessage(content=prompt)]
 
-    def _maybe_compact(self) -> None:
-        """Auto-compact if the session transcript is getting long.
+    def _maybe_prune_checkpoint(self) -> None:
+        """Keep LangGraph's in-thread message history bounded.
 
-        Triggered when > NEXUS_AUTOCOMPACT_EVENTS (default 80) events exist.
-        The summary lands in the `threads` tier and surfaces automatically
-        on the next turn via nine-tier injection. Best-effort; never raises.
+        Without this, checkpoints grow forever and every turn re-sends the
+        whole history to the LLM. We cap in-thread messages at
+        NEXUS_CHECKPOINT_MAX_MESSAGES (default 40) — plenty for recent
+        context; older content lives in the 9-tier memory + graph instead.
+        """
+        import os as _os
+        try:
+            cap = int(_os.environ.get("NEXUS_CHECKPOINT_MAX_MESSAGES", "40"))
+        except (TypeError, ValueError):
+            cap = 40
+        try:
+            state = self.graph.get_state(self.config)
+            msgs = list((state.values or {}).get("messages") or [])
+            if len(msgs) <= cap:
+                return
+            from langchain_core.messages import RemoveMessage
+            # Drop all but the most recent `cap` messages.
+            to_remove = msgs[:-cap]
+            self.graph.update_state(
+                self.config,
+                {"messages": [RemoveMessage(id=m.id) for m in to_remove if getattr(m, "id", None)]},
+            )
+        except Exception:
+            pass
+
+    def _maybe_compact(self) -> None:
+        """Auto-compact when uncompacted events exceed the threshold.
+
+        Tracks a "compact" marker event in the session. Only counts events
+        AFTER the most recent marker — so once we've compacted, we don't
+        re-trigger every turn until new activity piles up again.
         """
         import os as _os
         try:
@@ -188,17 +216,29 @@ class Oracle:
                 return
             threshold = int(_os.environ.get("NEXUS_AUTOCOMPACT_EVENTS", "80"))
             from nexus import sessions as _s
-            events = _s.read_thread(self.thread_id, limit=threshold + 20)
-            if len(events) < threshold:
+            events = _s.read_thread(self.thread_id, limit=500)
+            if not events:
+                return
+            # Walk backwards to find the last compact marker
+            last_mark_idx = -1
+            for i in range(len(events) - 1, -1, -1):
+                if events[i].get("kind") == "compact":
+                    last_mark_idx = i
+                    break
+            new_events = len(events) - 1 - last_mark_idx
+            if new_events < threshold:
                 return
             from nexus.compaction import compact as _compact
-            _compact(self.thread_id, keep_recent=max(10, threshold // 4))
+            report = _compact(self.thread_id, keep_recent=max(10, threshold // 4))
+            if report.get("ok"):
+                _s.log(self.thread_id, "compact", summary_chars=report.get("summary_chars", 0))
         except Exception:
             pass
 
     def ask(self, prompt: str) -> str:
         from nexus import sessions as _sessions
 
+        self._maybe_prune_checkpoint()
         self._maybe_compact()
         self.memory.log_turn(role="user", content=prompt, thread_id=self.thread_id)
         _sessions.log(self.thread_id, "user", content=prompt)
@@ -250,6 +290,7 @@ class Oracle:
             )
 
     def stream_events(self, prompt: str):
+        self._maybe_prune_checkpoint()
         self._maybe_compact()
         """Token-level streaming with tagged events.
 
