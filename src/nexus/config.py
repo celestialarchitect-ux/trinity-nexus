@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # Embedder keep_alive passed to Ollama. "0s" = unload after each call
     # (good for 24GB GPUs running a big primary). "5m" = default hot.
     oracle_embed_keepalive: str = Field(default="5m")
+    # Primary model keep_alive. "-1" = never unload (pin in VRAM). Measured
+    # with qwen3:4b on RTX 4090: keep_alive="-1" gives 0.1s warm calls,
+    # the default "5m" gave 60s reloads between turns in our env.
+    oracle_primary_keepalive: str = Field(default="-1")
 
     # Teacher (optional)
     deepseek_api_key: str = Field(default="")

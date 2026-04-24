@@ -56,11 +56,20 @@ def _make_llm(model: str | None = None) -> ChatOllama:
                 model = mode_model
         except Exception:
             pass
+    # keep_alive: pin the model in VRAM. ChatOllama accepts str|int|float.
+    # Use int(-1) when possible (Ollama's "never unload" sentinel).
+    ka_raw = settings.oracle_primary_keepalive
+    try:
+        keep_alive: str | int = int(ka_raw)
+    except (TypeError, ValueError):
+        keep_alive = ka_raw
+
     return ChatOllama(
         model=model or settings.oracle_primary_model,
         base_url=settings.oracle_ollama_host,
         temperature=0.7,
         num_ctx=settings.oracle_num_ctx,
+        keep_alive=keep_alive,
         client_kwargs={"timeout": settings.oracle_llm_timeout_sec},
     ).bind_tools(_all_tools())
 
