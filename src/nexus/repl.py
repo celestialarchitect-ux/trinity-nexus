@@ -36,6 +36,8 @@ HELP_TEXT = """\
 **commands** (§04/§13/§06/§19/§29)
 
   /help                show this help
+  /status              one-glance current setup (thread, model, mode,
+                       backends, security, cost)
   /onboard             walk §04/§23/§24 orientation to build the USER MAP
   /user-map            print the active USER MAP
   /mode [name|list|off] switch operating mode (§13). Names: architect,
@@ -111,18 +113,31 @@ def _build_session() -> PromptSession | None:
         return None
 
 
+_SESSION_BROKEN = False  # set to True after prompt-toolkit crashes mid-session
+
+
 def _read_line(session: PromptSession | None, console: Console) -> str:
     """Unified input — prompt-toolkit where available, stdlib input() elsewhere.
 
-    Returns the user's line, or raises EOFError / KeyboardInterrupt as usual.
+    Returns the user's line. Propagates EOFError / KeyboardInterrupt so the
+    caller can decide (break vs continue). Any other error in prompt-toolkit
+    permanently switches the session over to input() for the rest of the run.
     """
-    if session is not None:
-        return session.prompt("❯ ", multiline=False)
-    # Fallback: plain input(). No per-char key bindings, but works in every shell.
+    global _SESSION_BROKEN
+    if session is not None and not _SESSION_BROKEN:
+        try:
+            return session.prompt("❯ ", multiline=False)
+        except (EOFError, KeyboardInterrupt):
+            raise
+        except Exception as e:
+            console.print(
+                f"[dim](prompt crashed: {type(e).__name__}: {e} — falling back to plain input)[/]"
+            )
+            _SESSION_BROKEN = True
+
     try:
         return input("❯ ")
     except UnicodeDecodeError:
-        # Some consoles emit non-UTF-8 bytes on certain paste events
         return ""
 
 
@@ -409,6 +424,49 @@ def _handle_spawn(args: list[str], console: Console) -> None:
     finally:
         sub.close()
     console.print(Markdown(answer or "_no response_"))
+
+
+def _handle_status(console: Console, thread: str) -> None:
+    """/status — one-glance Claude-Code-style summary of current setup."""
+    import os as _os
+
+    from nexus import cost as _cost
+    from nexus import modes as _modes
+    from nexus.runtime import available_backends
+    from nexus.security import is_readonly, is_safe_mode, rate_status
+
+    active = _modes.get_active()
+    backends = available_backends()
+    session_cost = _cost.session_total(thread)
+    rs = rate_status()
+
+    console.print()
+    console.print("[bold #00ff88]Trinity Nexus[/] · status\n")
+    console.print(f"  thread:   [cyan]{thread}[/]")
+    console.print(f"  model:    [cyan]{settings.oracle_primary_model}[/]  "
+                  f"[dim](fast: {settings.oracle_fast_model} · embed: {settings.oracle_embed_model})[/]")
+    console.print(f"  instance: [cyan]{getattr(settings, 'oracle_instance', 'Nexus')}[/]")
+    console.print(f"  cwd:      {_os.getcwd()}")
+    console.print(f"  mode:     [cyan]{active.name if active else 'none'}[/]")
+    console.print()
+    console.print("  [bold]backends[/]")
+    for b, ok in backends.items():
+        m = "[#7cffb0]●[/]" if ok else "[dim]○[/]"
+        console.print(f"    {m} {b}")
+    console.print()
+    console.print("  [bold]security[/]")
+    console.print(f"    safe:      {'[#7cffb0]on[/]' if is_safe_mode() else '[dim]off[/]'}")
+    console.print(f"    readonly:  {'[#7cffb0]on[/]' if is_readonly() else '[dim]off[/]'}")
+    console.print(f"    dangerous: "
+                  f"{'[red]unlocked[/]' if _os.environ.get('NEXUS_ALLOW_DANGEROUS') == '1' else '[#7cffb0]guarded[/]'}")
+    console.print(f"    rate:      tools {rs['tools_remaining_this_min']}/{rs['tools_limit']}  ·  "
+                  f"llm {rs['llm_remaining_this_min']}/{rs['llm_limit']}")
+    console.print()
+    console.print("  [bold]session cost[/]")
+    console.print(f"    calls: {session_cost['calls']}  ·  "
+                  f"tokens: {session_cost['prompt_tokens']:,}+{session_cost['completion_tokens']:,}  ·  "
+                  f"${session_cost['usd']:.4f}")
+    console.print()
 
 
 def _handle_cost(console: Console, thread: str) -> None:
@@ -950,6 +1008,7 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                 continue
 
             if user_in.startswith("/"):
+              try:
                 parts = user_in.split()
                 cmd, args = parts[0].lower(), parts[1:]
                 if cmd in {"/exit", "/quit"}:
@@ -1029,6 +1088,9 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                 if cmd == "/cost":
                     _handle_cost(console, thread)
                     continue
+                if cmd == "/status":
+                    _handle_status(console, thread)
+                    continue
                 if cmd == "/plan":
                     _handle_plan(args, console, thread)
                     continue
@@ -1074,10 +1136,36 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                 if cmd != "/paste":  # /paste already fell through
                     console.print(f"[yellow]unknown command: {cmd}[/]  try /help")
                     continue
+              except Exception as e:
+                console.print(
+                    f"[red]command failed[/] {type(e).__name__}: {e}"
+                )
+                console.print("[dim](REPL is fine — try /help to list commands)[/]")
+                try:
+                    from nexus import security as _sec
+                    _sec.audit("slash_failed", cmd=cmd, error=f"{type(e).__name__}: {e}")
+                except Exception:
+                    pass
+                continue
 
+            # Chat turn — §31: catch any stream / tool / render error so
+            # one bad turn never exits the REPL.
             t0 = time.perf_counter()
-            _stream_answer(oracle, user_in, console)
-            console.print(f"[dim]({time.perf_counter() - t0:.1f}s)[/]\n")
+            try:
+                _stream_answer(oracle, user_in, console)
+                console.print(f"[dim]({time.perf_counter() - t0:.1f}s)[/]\n")
+            except KeyboardInterrupt:
+                console.print("\n[dim](stream interrupted · type /exit to leave)[/]\n")
+            except Exception as e:
+                import traceback as _tb
+                console.print(f"\n[red]turn failed[/] {type(e).__name__}: {e}")
+                console.print("[dim](REPL is fine — keep going, or /exit to leave)[/]")
+                try:
+                    from nexus import security as _sec
+                    _sec.audit("turn_failed", error=f"{type(e).__name__}: {e}",
+                               traceback=_tb.format_exc()[:4000])
+                except Exception:
+                    pass
     finally:
         _hooks.run("pre_exit", {"thread": oracle.thread_id})
         oracle.close()

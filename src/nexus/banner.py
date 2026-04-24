@@ -1,8 +1,18 @@
-"""Trinity Nexus banner — retro neon purple on startup.
+"""Trinity Nexus startup banner — Claude-Code style.
 
-Solid-block NEXUS with TRINITY NEXUS subtitle. Renders in every modern
-monospace font; silently downgrades on non-terminal output.
-Switch styles with NEXUS_BANNER=pixel|shadow|off (or ORACLE_BANNER=…).
+Layout:
+
+  <NEXUS big pixel-block, neon purple gradient>
+
+    Trinity Intelligence Network            (green)
+
+    /help for commands  ·  /exit to leave   (dim)
+    cwd:    <current working directory>     (dim)
+    model:  <primary>  ·  instance  <name>  (dim)
+    v<ver>                                  (dim)
+
+Falls back to a single plain-text line on non-terminal output so piping to
+a file keeps working.
 """
 
 from __future__ import annotations
@@ -30,7 +40,7 @@ SHADOW_NEXUS = [
     r"╚═╝  ╚═══╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝",
 ]
 
-NEON_COLORS = [
+NEON_PURPLE = [
     "#c77dff",
     "#b23bf2",
     "#9d00ff",
@@ -38,6 +48,8 @@ NEON_COLORS = [
     "#6a00c2",
     "#5a00a8",
 ]
+
+NETWORK_GREEN = "#00ff88"
 
 
 def render_banner(
@@ -58,33 +70,42 @@ def render_banner(
 
     lines = SHADOW_NEXUS if style == "shadow" else PIXEL_NEXUS
 
-    body = Text()
+    # Logo — purple gradient
+    logo = Text()
     for i, line in enumerate(lines):
-        color = NEON_COLORS[min(i, len(NEON_COLORS) - 1)]
-        body.append(line + "\n", style=f"bold {color}")
+        color = NEON_PURPLE[min(i, len(NEON_PURPLE) - 1)]
+        logo.append("  " + line + "\n", style=f"bold {color}")
 
-    title = Text("T R I N I T Y   N E X U S\n", style="bold #c77dff")
-    tagline = Text(
-        "adaptive intelligence · local-first · truth before comfort\n",
-        style="#9d00ff",
-    )
+    # Network line — green (as requested)
+    network = Text()
+    network.append("  Trinity Intelligence Network\n", style=f"bold {NETWORK_GREEN}")
 
-    meta = Text()
-    if instance:
-        meta.append(f"instance {instance}", style="dim #c77dff")
-    if version:
-        meta.append(("  ·  " if meta.plain else "") + f"v{version}", style="dim")
+    # Help line
+    help_line = Text()
+    help_line.append("  /help", style=f"bold {NETWORK_GREEN}")
+    help_line.append(" for commands  ·  ", style="dim")
+    help_line.append("/exit", style=f"bold {NETWORK_GREEN}")
+    help_line.append(" to leave\n", style="dim")
+
+    # Cwd + model + instance
+    info = Text()
+    info.append(f"  cwd:      ", style="dim")
+    info.append(f"{os.getcwd()}\n", style=f"{NETWORK_GREEN}")
     if model:
-        meta.append(f"  ·  {model}", style="dim")
-    if device:
-        meta.append(f"  ·  {device}", style="dim")
-    if meta.plain:
-        meta.append("\n")
+        info.append(f"  model:    ", style="dim")
+        info.append(f"{model}", style=f"{NETWORK_GREEN}")
+        if instance:
+            info.append(f"   ·   instance  ", style="dim")
+            info.append(f"{instance}", style=f"{NETWORK_GREEN}")
+        info.append("\n")
+    if version:
+        info.append(f"  v{version}", style="dim")
+        if device:
+            info.append(f"   ·   {device}", style="dim")
+        info.append("\n")
 
     console.print()
-    console.print(body)
-    console.print(title)
-    console.print(tagline)
-    if meta.plain:
-        console.print(meta)
-    console.print("[dim]type /help for commands · /exit to leave[/]\n")
+    console.print(logo)
+    console.print(network)
+    console.print(help_line)
+    console.print(info)
