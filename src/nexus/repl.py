@@ -52,6 +52,7 @@ HELP_TEXT = """\
   /evolve <intent>     propose + test + promote a new skill
   /spawn <task>        run a sub-agent on a self-contained task (§19)
   /dangerous [on|off]  toggle destructive-command unlock (§29)
+  /safe [on|off]       hard lockdown: no run_command, write globs only
   /permissions [list|allow <tool> <p>|deny <tool> <p>|remove <t> <p>]
                        per-tool glob permissions (§29)
   /allow <tool> <pat>  shortcut: allow tool:pattern
@@ -80,22 +81,45 @@ shift+enter = newline · enter = submit
 """
 
 
-def _build_session() -> PromptSession:
-    """Prompt with history + Shift+Enter newline, Enter submit."""
-    bindings = KeyBindings()
+def _build_session() -> PromptSession | None:
+    """prompt-toolkit session if possible; None = caller falls back to input().
 
-    # Shift+Enter → insert newline (when terminal supports Meta/Esc+Enter)
-    @bindings.add(Keys.Escape, Keys.Enter)
-    def _(event):
-        event.current_buffer.insert_text("\n")
+    prompt-toolkit's Windows backend (Win32Output) requires a real Windows
+    console — it raises NoConsoleScreenBufferError in Git Bash / MSYS / Cygwin
+    which would crash the REPL on startup. We return None in that case so the
+    main loop can use stdlib `input()` instead.
+    """
+    try:
+        bindings = KeyBindings()
 
-    return PromptSession(
-        history=FileHistory(str(HISTORY_PATH)),
-        enable_history_search=True,
-        mouse_support=False,
-        multiline=False,
-        key_bindings=bindings,
-    )
+        @bindings.add(Keys.Escape, Keys.Enter)
+        def _(event):
+            event.current_buffer.insert_text("\n")
+
+        return PromptSession(
+            history=FileHistory(str(HISTORY_PATH)),
+            enable_history_search=True,
+            mouse_support=False,
+            multiline=False,
+            key_bindings=bindings,
+        )
+    except Exception:
+        return None
+
+
+def _read_line(session: PromptSession | None, console: Console) -> str:
+    """Unified input — prompt-toolkit where available, stdlib input() elsewhere.
+
+    Returns the user's line, or raises EOFError / KeyboardInterrupt as usual.
+    """
+    if session is not None:
+        return session.prompt("❯ ", multiline=False)
+    # Fallback: plain input(). No per-char key bindings, but works in every shell.
+    try:
+        return input("❯ ")
+    except UnicodeDecodeError:
+        # Some consoles emit non-UTF-8 bytes on certain paste events
+        return ""
 
 
 def _tool_call_line(name: str, args: dict) -> str:
@@ -727,6 +751,27 @@ def _handle_dangerous(args: list[str], console: Console) -> None:
         console.print(f"destructive ops: {state} · /dangerous on|off to toggle")
 
 
+def _handle_safe(args: list[str], console: Console) -> None:
+    """/safe [on|off] — hard lockdown (§29). Blocks run_command, restricts writes."""
+    target = (args[0].lower() if args else None)
+    current = os.environ.get("NEXUS_SAFE") == "1"
+    if target == "on":
+        os.environ["NEXUS_SAFE"] = "1"
+        console.print("[bold #7cffb0]SAFE MODE ON[/] · run_command blocked · "
+                      "write_file limited to NEXUS_WRITE_ALLOW globs")
+        if not os.environ.get("NEXUS_WRITE_ALLOW"):
+            console.print("[dim]  tip: set NEXUS_WRITE_ALLOW in .env to a colon-separated list "
+                          "of glob patterns (e.g. /home/you/scratch/**)[/]")
+    elif target == "off":
+        os.environ.pop("NEXUS_SAFE", None)
+        console.print("[#c77dff]safe mode OFF[/] · full tool access restored")
+    else:
+        state = "[#7cffb0]ON[/]" if current else "[dim]off[/]"
+        console.print(f"safe mode: {state} · /safe on|off to toggle")
+        console.print("[dim]safe mode blocks run_command entirely and restricts "
+                      "writes to NEXUS_WRITE_ALLOW[/]")
+
+
 def _handle_paste(console: Console) -> str:
     """Open the user's $EDITOR (or notepad on Windows) and return what they saved."""
     import subprocess
@@ -822,6 +867,11 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
 
     oracle = Oracle(thread_id=thread)
     session = _build_session()
+    if session is None:
+        console.print(
+            "[dim](prompt-toolkit unavailable in this shell — using plain input. "
+            "Shift+Enter newline + history won't work; /paste still will.)[/]\n"
+        )
 
     # First-run orientation (§23) — non-blocking invite, not a forced intake.
     if not is_onboarded():
@@ -833,7 +883,7 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
     try:
         while True:
             try:
-                user_in = session.prompt("❯ ", multiline=False).strip()
+                user_in = _read_line(session, console).strip()
             except KeyboardInterrupt:
                 console.print("[dim](ctrl-c — type /exit to quit)[/]")
                 continue
@@ -887,6 +937,9 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                     continue
                 if cmd == "/dangerous":
                     _handle_dangerous(args, console)
+                    continue
+                if cmd == "/safe":
+                    _handle_safe(args, console)
                     continue
                 if cmd in {"/permissions", "/perm", "/perms"}:
                     _handle_permissions(args, console)
