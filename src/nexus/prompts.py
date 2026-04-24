@@ -476,7 +476,14 @@ def build_system_prompt(
 
     lean_explicit = _os.environ.get("NEXUS_LEAN_SYSTEM", "").lower() in {"1", "true", "yes", "on"}
     lean_auto_for_frontier = _os.environ.get("NEXUS_USE_FRONTIER", "").lower() in {"1", "true", "yes", "on"}
-    if lean_explicit or lean_auto_for_frontier:
+    # Auto-route to frontier (NEXUS_AUTO_FRONTIER=1) means any turn could go
+    # to the frontier — use lean mode pre-emptively so we don't blow the TPM
+    # budget. Opt out with NEXUS_FULL_SYSTEM=1 if you've got a higher tier.
+    frontier_key_set = bool(_os.environ.get("NEXUS_FRONTIER_API_KEY"))
+    auto_route_on = _os.environ.get("NEXUS_AUTO_FRONTIER", "1").lower() in {"1", "true", "yes", "on"}
+    full_override = _os.environ.get("NEXUS_FULL_SYSTEM", "").lower() in {"1", "true", "yes", "on"}
+    lean_for_auto = frontier_key_set and auto_route_on and not full_override
+    if lean_explicit or lean_auto_for_frontier or lean_for_auto:
         return (
             header
             + "\n"

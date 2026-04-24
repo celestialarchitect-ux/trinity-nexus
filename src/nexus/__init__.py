@@ -5,7 +5,7 @@ from __future__ import annotations
 import io as _io
 import sys as _sys
 
-__version__ = "1.0.23"
+__version__ = "1.0.24"
 
 # Force UTF-8 on Windows consoles so Unicode banner + qwen3 output render right.
 # Applied on package import so every entry point (CLI, REPL, tests) gets it.

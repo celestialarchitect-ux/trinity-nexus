@@ -95,8 +95,8 @@ def _make_frontier_llm(model: str | None = None) -> BaseChatModel:
     ).bind_tools(_all_tools())
 
 
-def _make_llm(model: str | None = None) -> BaseChatModel:
-    # §13 — if a mode is active and names a preferred model, use it.
+def _make_local_llm(model: str | None = None) -> BaseChatModel:
+    """Build a local Ollama LangChain chat model (the sovereign brain)."""
     if model is None:
         try:
             from nexus.modes import preferred_model_for_active
@@ -106,20 +106,6 @@ def _make_llm(model: str | None = None) -> BaseChatModel:
         except Exception:
             pass
 
-    # Frontier brain — much stronger tool-use + reasoning. Used when
-    # NEXUS_USE_FRONTIER=1 (or --frontier flag, which sets that env var).
-    if _frontier_enabled():
-        try:
-            return _make_frontier_llm(model)
-        except Exception as e:
-            # Fall back to local Ollama rather than crash the agent.
-            import logging
-            logging.getLogger(__name__).warning(
-                "frontier LLM init failed (%s); falling back to local Ollama", e
-            )
-
-    # keep_alive: pin the model in VRAM. ChatOllama accepts str|int|float.
-    # Use int(-1) when possible (Ollama's "never unload" sentinel).
     ka_raw = settings.oracle_primary_keepalive
     try:
         keep_alive: str | int = int(ka_raw)
@@ -136,11 +122,129 @@ def _make_llm(model: str | None = None) -> BaseChatModel:
     ).bind_tools(_all_tools())
 
 
+# Back-compat — older callers import _make_llm. Routes the same as the graph
+# would: frontier when NEXUS_USE_FRONTIER=1, otherwise local.
+def _make_llm(model: str | None = None) -> BaseChatModel:
+    if _frontier_enabled():
+        try:
+            return _make_frontier_llm(model)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "frontier LLM init failed (%s); falling back to local Ollama", e
+            )
+    return _make_local_llm(model)
+
+
+_ACTION_VERBS = (
+    "build", "create", "make", "write", "generate", "scaffold", "implement",
+    "edit", "fix", "patch", "modify", "change", "refactor", "rename",
+    "run", "execute", "install", "compile", "test",
+    "delete", "remove",
+    "read", "open", "show me", "find", "search", "grep",
+    "fetch", "download", "scrape",
+)
+
+
+def _looks_like_action_request(text: str) -> bool:
+    """Heuristic: does this user message want an artifact, not just an answer?
+
+    Used to auto-route to the frontier model when one is configured. Keep this
+    cheap (no LLM call) and slightly over-eager — false positives just send
+    chatty questions to the bigger model, which is acceptable.
+    """
+    if not text:
+        return False
+    t = text.lower().strip()
+    # Strip leading slash commands and prefixes.
+    if t.startswith(("/", "@", "!", "#", "?")):
+        return False
+    head = t[:200]
+    for verb in _ACTION_VERBS:
+        if verb in head:
+            return True
+    # Imperative/imperative-adjacent grammar (`can you ...`, `please ...`,
+    # `i want you to ...`) is also action-flavored.
+    for trigger in ("can you ", "please ", "i want you to ", "i need you to "):
+        if t.startswith(trigger):
+            return True
+    return False
+
+
+def _frontier_available() -> bool:
+    """True iff a frontier API key is configured. Cheap env check."""
+    import os as _os
+    return bool(_os.environ.get("NEXUS_FRONTIER_API_KEY"))
+
+
 def _make_graph(checkpoint_path: Path):
-    llm = _make_llm()
+    """Compile the agent graph with both local + frontier LLMs.
+
+    Local Ollama is always built (free, sovereign). Frontier is built lazily
+    iff a key is configured. The llm_node picks per-turn based on:
+      1. NEXUS_USE_FRONTIER env var (set by --frontier flag or /model frontier)
+      2. NEXUS_AUTO_FRONTIER env var (default 1) — auto-route action requests
+         to frontier when one is available
+
+    On frontier API failure (rate limit, network, etc.) the node falls back
+    to the local model so the turn still completes instead of crashing.
+    """
+    import logging as _logging
+    import os as _os
+
+    log = _logging.getLogger(__name__)
+
+    # Pre-build both LLMs at graph-compile time so per-turn routing is free.
+    local_llm = _make_local_llm()
+    frontier_llm = None
+    if _frontier_available():
+        try:
+            frontier_llm = _make_frontier_llm()
+        except Exception as e:
+            log.warning("frontier LLM init skipped (%s)", e)
+
+    def _last_user_text(state: OracleState) -> str:
+        for msg in reversed(state.get("messages") or []):
+            if isinstance(msg, HumanMessage):
+                content = msg.content if isinstance(msg.content, str) else ""
+                return content
+        return ""
+
+    def _should_use_frontier(state: OracleState) -> bool:
+        if frontier_llm is None:
+            return False
+        # Explicit on-switch always wins.
+        if _os.environ.get("NEXUS_USE_FRONTIER", "").lower() in {"1", "true", "yes", "on"}:
+            return True
+        # Auto-route action requests when allowed.
+        auto = _os.environ.get("NEXUS_AUTO_FRONTIER", "1").lower() in {"1", "true", "yes", "on"}
+        if auto and _looks_like_action_request(_last_user_text(state)):
+            return True
+        return False
 
     def llm_node(state: OracleState) -> dict:
-        response = llm.invoke(state["messages"])
+        use_frontier = _should_use_frontier(state)
+        if use_frontier:
+            try:
+                response = frontier_llm.invoke(state["messages"])
+                return {"messages": [response]}
+            except Exception as e:
+                # Common: 413 over-TPM, 401 bad key, network. Fall back so the
+                # turn still completes; surface a small note in the response.
+                log.warning("frontier LLM failed (%s); falling back to local", e)
+                response = local_llm.invoke(state["messages"])
+                # Annotate: prefix the local response so the user knows
+                fallback_note = (
+                    f"\n\n_(frontier unavailable: {type(e).__name__}; answered locally)_"
+                )
+                if isinstance(response, AIMessage):
+                    response = AIMessage(
+                        content=str(response.content) + fallback_note,
+                        tool_calls=getattr(response, "tool_calls", []) or [],
+                        id=getattr(response, "id", None),
+                    )
+                return {"messages": [response]}
+        response = local_llm.invoke(state["messages"])
         return {"messages": [response]}
 
     tool_node = ToolNode(_all_tools())
