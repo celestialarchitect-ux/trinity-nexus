@@ -168,21 +168,91 @@ def write_file(path: str, content: str) -> str:
 def edit_file(path: str, old_string: str, new_string: str) -> str:
     """Replace the first occurrence of `old_string` with `new_string` in a file.
 
-    Fails if `old_string` appears zero or more than once — caller must provide
-    enough surrounding context to make the match unique.
+    First tries exact match; on whitespace-drift, normalises indentation and
+    retries. Fails if `old_string` appears zero or >1 times — caller must
+    provide enough surrounding context to make the match unique.
     """
     try:
         p = _resolve(path)
         if not p.exists():
             return f"error: no such file: {p}"
         text = p.read_text(encoding="utf-8")
+
+        # Exact
         count = text.count(old_string)
-        if count == 0:
-            return "error: old_string not found in file"
+        if count == 1:
+            p.write_text(text.replace(old_string, new_string, 1), encoding="utf-8")
+            return f"edited {p} (1 replacement)"
         if count > 1:
             return f"error: old_string appears {count} times — add more context to make it unique"
-        p.write_text(text.replace(old_string, new_string, 1), encoding="utf-8")
-        return f"edited {p} (1 replacement)"
+
+        # Whitespace-tolerant fallback: normalise leading indentation
+        def _normalise(s: str) -> str:
+            lines = s.splitlines()
+            # Strip common leading whitespace
+            non_empty = [ln for ln in lines if ln.strip()]
+            if not non_empty:
+                return s
+            indent = min(len(ln) - len(ln.lstrip()) for ln in non_empty)
+            return "\n".join(ln[indent:] if ln.strip() else "" for ln in lines)
+
+        norm_old = _normalise(old_string)
+        norm_text = _normalise(text)
+        if norm_text.count(norm_old) == 1:
+            # Locate in the normalised version, then map back to original
+            idx = norm_text.index(norm_old)
+            # Rough mapping via cumulative line length
+            orig_lines = text.splitlines(keepends=True)
+            norm_lines = norm_text.splitlines(keepends=True)
+            char_count = 0
+            start_line = 0
+            for i, ln in enumerate(norm_lines):
+                if char_count >= idx:
+                    start_line = i
+                    break
+                char_count += len(ln)
+            else:
+                start_line = len(norm_lines) - 1
+            end_line = start_line + len(norm_old.splitlines())
+            new_lines = orig_lines[:start_line] + [new_string + ("\n" if not new_string.endswith("\n") else "")] + orig_lines[end_line:]
+            p.write_text("".join(new_lines), encoding="utf-8")
+            return f"edited {p} (1 replacement, whitespace-tolerant)"
+
+        return "error: old_string not found in file (even after whitespace normalisation)"
+    except Exception as e:
+        return f"error: {type(e).__name__}: {e}"
+
+
+@tool
+def apply_diff(path: str, search: str, replace: str) -> str:
+    """SEARCH/REPLACE-block edit — aider's format, more robust than edit_file.
+
+    `search` is the exact current text (must match once). `replace` is what
+    replaces it. Use this when edit_file fails due to drift or when you want
+    to make a clearly-bounded change. Returns a line-count delta on success.
+    """
+    try:
+        p = _resolve(path)
+        if not p.exists():
+            return f"error: no such file: {p}"
+        text = p.read_text(encoding="utf-8")
+        count = text.count(search)
+        if count == 0:
+            # try stripping trailing whitespace on each line
+            norm_search = "\n".join(ln.rstrip() for ln in search.splitlines())
+            norm_text = "\n".join(ln.rstrip() for ln in text.splitlines())
+            if norm_text.count(norm_search) == 1:
+                # replace in normalised then write whole normalised text
+                new_norm = norm_text.replace(norm_search, replace, 1)
+                p.write_text(new_norm, encoding="utf-8")
+                return f"applied diff to {p} (normalised whitespace)"
+            return "error: search block not found"
+        if count > 1:
+            return f"error: search block appears {count} times — widen the context"
+        p.write_text(text.replace(search, replace, 1), encoding="utf-8")
+        delta = replace.count("\n") - search.count("\n")
+        sign = "+" if delta >= 0 else ""
+        return f"applied diff to {p} ({sign}{delta} lines)"
     except Exception as e:
         return f"error: {type(e).__name__}: {e}"
 
@@ -402,6 +472,7 @@ BUILTIN_TOOLS = [
     read_file,
     write_file,
     edit_file,
+    apply_diff,
     glob_paths,
     grep_files,
     # web

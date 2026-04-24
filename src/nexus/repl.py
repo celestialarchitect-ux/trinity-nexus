@@ -52,6 +52,11 @@ HELP_TEXT = """\
   /evolve <intent>     propose + test + promote a new skill
   /spawn <task>        run a sub-agent on a self-contained task (§19)
   /dangerous [on|off]  toggle destructive-command unlock (§29)
+  /permissions [list|allow <tool> <p>|deny <tool> <p>|remove <t> <p>]
+                       per-tool glob permissions (§29)
+  /allow <tool> <pat>  shortcut: allow tool:pattern
+  /deny <tool> <pat>   shortcut: deny tool:pattern
+  /trace               show tool calls + memory tiers used recently
   /paste               open $EDITOR / notepad for a big multi-line prompt
   /reset               new thread (memory kept, chat context dropped)
   /thread [id]         show or switch thread
@@ -354,6 +359,77 @@ def _handle_spawn(args: list[str], console: Console) -> None:
     console.print(Markdown(answer or "_no response_"))
 
 
+def _handle_permissions(args: list[str], console: Console) -> None:
+    """/permissions [list|allow <tool> <pattern>|deny <tool> <pattern>|remove <tool> <pattern>]"""
+    from nexus import permissions as perms
+
+    if not args or args[0] == "list":
+        rules = perms.list_rules()
+        if not rules:
+            console.print(
+                "[dim]no rules set · read-family tools allowed by default, "
+                "mutation denied by default[/]"
+            )
+            console.print(
+                "[dim]add a rule: /allow bash 'git *' · /deny write '**/.env'[/]"
+            )
+            return
+        from rich.table import Table as _T
+        t = _T(title="permissions")
+        t.add_column("verdict")
+        t.add_column("tool", style="cyan")
+        t.add_column("pattern")
+        for tool, pattern, verdict in rules:
+            color = "#7cffb0" if verdict == "allow" else "red"
+            t.add_row(f"[{color}]{verdict}[/]", tool, pattern)
+        console.print(t)
+        return
+
+    sub = args[0].lower()
+    if sub in {"allow", "deny"} and len(args) >= 3:
+        tool, pattern = args[1], " ".join(args[2:])
+        (perms.allow if sub == "allow" else perms.deny)(tool, pattern)
+        console.print(f"[#7cffb0]{sub}[/] {tool}:{pattern}")
+    elif sub == "remove" and len(args) >= 3:
+        tool, pattern = args[1], " ".join(args[2:])
+        ok = perms.remove(tool, pattern)
+        console.print("[#7cffb0]removed[/]" if ok else "[dim]no such rule[/]")
+    else:
+        console.print("[yellow]usage: /permissions [list|allow|deny|remove] <tool> <pattern>[/]")
+
+
+def _handle_trace(console: Console) -> None:
+    """/trace — show what memory tiers / tools / skills were used most recently."""
+    from nexus import sessions as _sessions
+
+    # find the most recent session file
+    from nexus.config import settings as _s
+
+    base = _s.oracle_home / "sessions"
+    if not base.exists():
+        console.print("[dim]no session data[/]")
+        return
+    files = sorted(base.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    if not files:
+        console.print("[dim]no session data[/]")
+        return
+    events = _sessions.read_thread(files[-1].stem, limit=60)
+    tool_calls = [e for e in events if e.get("kind") == "tool_call"]
+    tool_results = [e for e in events if e.get("kind") == "tool_result"]
+    console.print()
+    console.print(f"[bold #c77dff]trace[/] · thread [cyan]{files[-1].stem}[/] · {len(events)} events")
+    if not tool_calls:
+        console.print("[dim]no tool calls in recent turns[/]")
+    for tc in tool_calls[-10:]:
+        name = tc.get("name", "?")
+        args = tc.get("args", {})
+        arg_preview = ", ".join(f"{k}={str(v)[:40]}" for k, v in args.items())
+        console.print(f"  [#b23bf2]✦[/] [cyan]{name}[/]  [dim]{arg_preview}[/]")
+    if tool_results:
+        console.print(f"[dim]  …{len(tool_results)} tool results observed[/]")
+    console.print()
+
+
 def _handle_dangerous(args: list[str], console: Console) -> None:
     target = (args[0].lower() if args else None)
     current = os.environ.get("NEXUS_ALLOW_DANGEROUS") == "1"
@@ -529,6 +605,20 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                     continue
                 if cmd == "/dangerous":
                     _handle_dangerous(args, console)
+                    continue
+                if cmd in {"/permissions", "/perm", "/perms"}:
+                    _handle_permissions(args, console)
+                    continue
+                if cmd in {"/allow", "/deny"} and len(args) >= 2:
+                    from nexus import permissions as _p
+                    tool, pattern = args[0], " ".join(args[1:])
+                    (_p.allow if cmd == "/allow" else _p.deny)(tool, pattern)
+                    console.print(
+                        f"[#7cffb0]{cmd.lstrip('/')}[/] {tool}:{pattern}"
+                    )
+                    continue
+                if cmd == "/trace":
+                    _handle_trace(console)
                     continue
                 if cmd == "/paste":
                     pasted = _handle_paste(console)
