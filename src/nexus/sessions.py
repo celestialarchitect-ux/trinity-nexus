@@ -23,7 +23,10 @@ def _enabled() -> bool:
 
 
 def _path(thread_id: str) -> Path:
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in (thread_id or "default"))
+    # Strict sanitiser: alphanum + '-' + '_' only. Dots are stripped to block
+    # path-traversal attempts like "../etc".
+    safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (thread_id or "default"))
+    safe = safe.strip("_") or "default"
     p = settings.oracle_home / "sessions" / f"{safe}.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
