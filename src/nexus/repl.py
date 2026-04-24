@@ -407,21 +407,63 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
     try:
         thinking = Thinking(console).__enter__()
 
+        # Helpers to cleanly switch between spinner / live-markdown / printing
+        # text. State machine: the agent can interleave tool_calls + text
+        # tokens in ANY order across multiple LLM steps, so every transition
+        # has to close whatever UI widget was active.
+        def _pause_spinner():
+            nonlocal thinking
+            if thinking is not None:
+                try:
+                    thinking.pause()
+                except Exception:
+                    pass
+
+        def _resume_spinner(verb: str | None = None):
+            nonlocal thinking
+            if thinking is None:
+                try:
+                    thinking = Thinking(console).__enter__()
+                except Exception:
+                    thinking = None
+                    return
+            try:
+                if verb:
+                    thinking.set_verb(verb)
+                thinking.resume(verb=verb) if verb else thinking.resume()
+            except Exception:
+                pass
+
+        def _close_live():
+            nonlocal live
+            if live is not None:
+                try:
+                    live.__exit__(None, None, None)
+                except Exception:
+                    pass
+                live = None
+
         if use_events:
             for evt in oracle.stream_events(prompt):
                 t = evt.get("type")
+
                 if t == "tool_call":
-                    thinking.pause()
+                    # A tool call can arrive AFTER we've already streamed some
+                    # text (multi-step agent). Close the live, go back to the
+                    # spinner, print the call.
+                    _close_live()
+                    _pause_spinner()
                     console.print(
                         f"[bold #b23bf2]✦[/] [dim]{_tool_call_line(evt['name'], evt.get('args', {}))}[/]"
                     )
                     _hooks.run("pre_tool", {"name": evt["name"], "args": evt.get("args")})
-                    thinking.resume(verb="Invoking")
+                    _resume_spinner("Invoking")
+
                 elif t == "tool_result":
                     content_preview = evt.get("content", "")
                     tool_name = evt.get("name", "")
-                    thinking.pause()
-                    # Real diff rendering for file mutations (§17 + Claude-Code parity)
+                    _close_live()
+                    _pause_spinner()
                     from nexus.tools import pop_recent_diff as _pop
                     if tool_name in {"edit_file", "apply_diff", "write_file"}:
                         d = _pop()
@@ -434,29 +476,25 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                             f"  [dim]⎿[/] [dim]{_condense_tool_result(content_preview)}[/]"
                         )
                     _hooks.run("post_tool", {"content": content_preview[:2000]})
-                    # §31 Failure Recovery / self-heal hint: if the tool
-                    # returned an obvious error, nudge the agent to adjust.
                     low = content_preview.lower()
-                    if any(
+                    recover = any(
                         marker in low
                         for marker in ("error:", "traceback", "not found", "permission denied", "timeout")
-                    ):
-                        thinking.set_verb("Recovering")
-                    else:
-                        thinking.resume(verb="Receiving")
-                        continue
-                    thinking.resume()
+                    )
+                    _resume_spinner("Recovering" if recover else "Receiving")
+
                 elif t == "token":
                     chunk = evt.get("text", "")
                     if not chunk:
                         continue
-                    if not shown_first_text:
-                        thinking.pause()
-                        thinking = None
-                        shown_first_text = True
-                        final_text = chunk
-                        # code-theme="monokai" gives readable syntax highlighting
-                        # in streamed code blocks; ▋ is a typing-cursor suffix.
+                    if live is None:
+                        # Either first text ever, OR text resumed after a tool
+                        # round-trip interrupted the previous Live. Either way:
+                        # kill the spinner and open a fresh Live.
+                        _pause_spinner()
+                        # Append to final_text, not overwrite — multi-step
+                        # responses concatenate naturally.
+                        final_text += chunk
                         live = Live(
                             Markdown(final_text + " ▋", code_theme="monokai"),
                             console=console,
@@ -464,10 +502,11 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                             vertical_overflow="visible",
                         )
                         live.__enter__()
+                        shown_first_text = True
                     else:
                         final_text += chunk
-                        if live is not None:
-                            live.update(Markdown(final_text + " ▋", code_theme="monokai"))
+                        live.update(Markdown(final_text + " ▋", code_theme="monokai"))
+
                 elif t == "final":
                     # Drop the typing cursor from the final frame.
                     if live is not None and final_text:
