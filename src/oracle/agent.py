@@ -23,6 +23,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from oracle.config import settings
 from oracle.distillation.collector import InteractionCollector
 from oracle.memory import MemoryTiers
+from oracle.project import load_instructions
 from oracle.prompts import build_system_prompt
 from oracle.retrieval.tool import retrieve_notes
 from oracle.tools import BUILTIN_TOOLS
@@ -42,6 +43,8 @@ def _make_llm(model: str | None = None) -> ChatOllama:
         base_url=settings.oracle_ollama_host,
         temperature=0.7,
         num_ctx=settings.oracle_num_ctx,
+        # reasoning=True (default) keeps qwen3's CoT in a separate field so
+        # `content` stays clean. Flip to False for snappier non-tool chat.
         client_kwargs={"timeout": settings.oracle_llm_timeout_sec},
     ).bind_tools(_all_tools())
 
@@ -75,7 +78,12 @@ def _build_system_with_context(
         user=settings.oracle_user, device=settings.oracle_device_name
     )
     ctx = memory.build_context(intent, thread_id=thread_id, archival_k=4, recall_n=6)
-    return SystemMessage(content=base + "\n\n" + ctx.to_prompt_block())
+    instructions = load_instructions()
+    parts = [base]
+    if instructions:
+        parts.append("## instructions\n" + instructions)
+    parts.append(ctx.to_prompt_block())
+    return SystemMessage(content="\n\n".join(parts))
 
 
 class Oracle:

@@ -54,6 +54,38 @@ def version():
 
 
 @cli.command()
+@click.option("--branch", default="main", help="Git branch to pull from.")
+def update(branch: str):
+    """Pull the latest Oracle from git and reinstall in-place."""
+    import subprocess as _sub
+    from pathlib import Path as _P
+    import sys as _sys
+
+    repo = _P(__file__).resolve().parents[2]
+    console.print(f"[dim]updating {repo} from {branch}…[/]")
+
+    def _run(cmd: list[str]) -> int:
+        proc = _sub.run(cmd, cwd=str(repo), capture_output=True, text=True)
+        if proc.returncode != 0:
+            console.print(f"[red]{' '.join(cmd)} failed[/]")
+            if proc.stderr:
+                console.print(f"[red]{proc.stderr.strip()}[/]")
+        elif proc.stdout.strip():
+            console.print(f"[dim]{proc.stdout.strip()}[/]")
+        return proc.returncode
+
+    if _run(["git", "fetch", "origin", branch]) != 0:
+        return
+    if _run(["git", "checkout", branch]) != 0:
+        return
+    if _run(["git", "pull", "--ff-only", "origin", branch]) != 0:
+        return
+    if _run([_sys.executable, "-m", "pip", "install", "-q", "-e", "."]) != 0:
+        return
+    console.print("[#7cffb0]oracle updated[/]")
+
+
+@cli.command()
 def doctor():
     """Check the environment: Ollama, models, memory, skills, retrieval."""
     from oracle.memory import MemoryTiers

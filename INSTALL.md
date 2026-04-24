@@ -14,21 +14,20 @@ Oracle runs entirely on your own computer. No account, no cloud, no leash.
 
 ## Install — one line
 
-> Replace `<REPO_URL>` with the Oracle repo you were given
-> (e.g. `https://github.com/elysianwand/oracle`).
+> Canonical repo: `https://github.com/celestialarchitect-ux/oracle`.
 
 ### macOS / Linux / WSL
 
 ```bash
-ORACLE_REPO_URL=<REPO_URL> \
-  curl -sSL <REPO_URL>/raw/main/install.sh | bash
+ORACLE_REPO_URL=https://github.com/celestialarchitect-ux/oracle \
+  curl -sSL https://github.com/celestialarchitect-ux/oracle/raw/main/install.sh | bash
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-$env:ORACLE_REPO_URL="<REPO_URL>"; `
-  irm <REPO_URL>/raw/main/install.ps1 | iex
+$env:ORACLE_REPO_URL="https://github.com/celestialarchitect-ux/oracle"; `
+  irm https://github.com/celestialarchitect-ux/oracle/raw/main/install.ps1 | iex
 ```
 
 Both installers:
@@ -44,7 +43,7 @@ Both installers:
 ## Install — from a clone (dev)
 
 ```bash
-git clone <REPO_URL>
+git clone https://github.com/celestialarchitect-ux/oracle
 cd oracle
 ./install.sh             # or .\install.ps1 on Windows
 ```

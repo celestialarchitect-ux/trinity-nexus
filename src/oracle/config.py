@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # resolved (either bigger GPU or forced keep_alive=0). Override via .env.
     oracle_embed_model: str = Field(default="bge-m3")
     oracle_ollama_host: str = Field(default="http://localhost:11434")
-    oracle_num_ctx: int = Field(default=2048)
+    oracle_num_ctx: int = Field(default=8192)
     oracle_llm_timeout_sec: float = Field(default=600.0)
     # Embedder keep_alive passed to Ollama. "0s" = unload after each call
     # (good for 24GB GPUs running a big primary). "5m" = default hot.
