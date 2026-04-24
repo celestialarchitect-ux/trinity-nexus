@@ -181,13 +181,27 @@ class OpenAICompatBackend(Backend):
         data = r.json()
         choice = data["choices"][0]["message"]
         usage = data.get("usage") or {}
-        return ChatResponse(
+        resp = ChatResponse(
             content=choice.get("content") or "",
             tool_calls=choice.get("tool_calls") or [],
             finish_reason=data["choices"][0].get("finish_reason", "stop"),
             prompt_tokens=int(usage.get("prompt_tokens") or 0),
             completion_tokens=int(usage.get("completion_tokens") or 0),
         )
+        # Log to cost ledger (non-fatal on failure)
+        try:
+            from nexus import cost as _cost
+            _cost.record(
+                backend=self.name,
+                model=req.extra.get("model_override") or req.model or self.default_model,
+                prompt_tokens=resp.prompt_tokens,
+                completion_tokens=resp.completion_tokens,
+                thread_id=req.extra.get("thread_id", ""),
+                purpose=req.extra.get("purpose", "chat"),
+            )
+        except Exception:
+            pass
+        return resp
 
     def stream(self, req: ChatRequest) -> StreamIter:
         if not self.api_key:

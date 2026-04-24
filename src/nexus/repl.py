@@ -58,10 +58,17 @@ HELP_TEXT = """\
   /deny <tool> <pat>   shortcut: deny tool:pattern
   /trace               show tool calls + memory tiers used recently
   /model [list|<id>]   show or swap the primary model (session)
-  /frontier <provider> [model] [key=...]
+  /frontier [test|<provider> [model] [key=...]]
                        configure OpenAI-compat frontier backend
                        providers: openrouter, openai, deepseek, groq,
                                   together, fireworks, xai, mistral
+  /cost                session + daily token/spend totals
+  /plan <intent>       draft an ordered task plan (§09 / §13 orchestrator)
+  /execute             run the next pending task in the active plan
+  /compact [N]         summarize old turns into the 'threads' memory tier
+  /rewind [N]          drop the last N agent turns
+  /sessions            list recorded threads
+  /resume <thread_id>  jump back into a past thread
   /paste               open $EDITOR / notepad for a big multi-line prompt
   /reset               new thread (memory kept, chat context dropped)
   /thread [id]         show or switch thread
@@ -140,12 +147,24 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                     _hooks.run("pre_tool", {"name": evt["name"], "args": evt.get("args")})
                     thinking.resume(verb="Invoking")
                 elif t == "tool_result":
+                    content_preview = evt.get("content", "")
                     thinking.pause()
                     console.print(
-                        f"  [dim]⎿[/] [dim]{_condense_tool_result(evt.get('content', ''))}[/]"
+                        f"  [dim]⎿[/] [dim]{_condense_tool_result(content_preview)}[/]"
                     )
-                    _hooks.run("post_tool", {"content": evt.get("content", "")[:2000]})
-                    thinking.resume(verb="Receiving")
+                    _hooks.run("post_tool", {"content": content_preview[:2000]})
+                    # §31 Failure Recovery / self-heal hint: if the tool
+                    # returned an obvious error, nudge the agent to adjust.
+                    low = content_preview.lower()
+                    if any(
+                        marker in low
+                        for marker in ("error:", "traceback", "not found", "permission denied", "timeout")
+                    ):
+                        thinking.set_verb("Recovering")
+                    else:
+                        thinking.resume(verb="Receiving")
+                        continue
+                    thinking.resume()
                 elif t == "token":
                     chunk = evt.get("text", "")
                     if not chunk:
@@ -362,6 +381,154 @@ def _handle_spawn(args: list[str], console: Console) -> None:
     finally:
         sub.close()
     console.print(Markdown(answer or "_no response_"))
+
+
+def _handle_cost(console: Console, thread: str) -> None:
+    """/cost — session + daily token/spend summary."""
+    from nexus import cost as _cost
+
+    session = _cost.session_total(thread)
+    day = _cost.daily_total()
+    console.print()
+    console.print("[bold #c77dff]cost ledger[/]")
+    console.print(
+        f"  session  · {session['calls']} calls · "
+        f"{session['prompt_tokens']:,} in + {session['completion_tokens']:,} out · "
+        f"${session['usd']:.4f}"
+    )
+    console.print(
+        f"  today    · {day['calls']} calls · "
+        f"{day['prompt_tokens']:,} in + {day['completion_tokens']:,} out · "
+        f"${day['usd']:.4f}"
+    )
+    if day["by_model"]:
+        console.print("\n  [dim]by model[/]")
+        for m, stats in sorted(day["by_model"].items(), key=lambda kv: -kv[1]["usd"]):
+            console.print(
+                f"    [cyan]{m}[/]  calls={stats['calls']}  "
+                f"tok={stats['prompt_tokens']:,}+{stats['completion_tokens']:,}  "
+                f"${stats['usd']:.4f}"
+            )
+    console.print()
+
+
+def _handle_plan(args: list[str], console: Console, thread: str) -> None:
+    """/plan <intent> — draft an ordered task plan without executing."""
+    from nexus import plan as _plan
+
+    if not args:
+        existing = _plan.load(thread)
+        if not existing:
+            console.print("[yellow]usage: /plan <intent>[/]  no active plan")
+            return
+        console.print(f"[bold #c77dff]plan[/]  intent: [cyan]{existing.intent}[/]")
+        for i, t in enumerate(existing.tasks, 1):
+            mark = {"pending": "○", "done": "●", "failed": "✗", "skipped": "—"}.get(t.status, "?")
+            console.print(f"  {mark} [{i}] {t.description}")
+        return
+
+    intent = " ".join(args)
+    console.print(f"[dim]drafting plan for: {intent}…[/]")
+    with Thinking(console) as t:
+        t.set_verb("Planning")
+        p = _plan.draft(intent, thread)
+    console.print(f"[#9d00ff]plan drafted[/] · {len(p.tasks)} tasks")
+    for i, task in enumerate(p.tasks, 1):
+        console.print(f"  [{i}] {task.description}")
+    console.print()
+    console.print("[dim]/execute  to run the next pending task · /plan  to re-display[/]")
+
+
+def _handle_execute(args: list[str], console: Console, oracle, thread: str) -> None:
+    """/execute — run the next pending task in the active plan."""
+    from nexus import plan as _plan
+
+    p = _plan.load(thread)
+    if not p:
+        console.print("[yellow]no plan for this thread · /plan <intent> first[/]")
+        return
+    task = _plan.next_pending(p)
+    if not task:
+        console.print("[#7cffb0]plan complete[/]")
+        return
+    console.print(f"[dim]executing [{task.id}][/] {task.description}")
+    t0 = time.time()
+    try:
+        result = _stream_answer(oracle, task.description, console)
+        _plan.mark(p, task.id, status="done", result=result, thread_id=thread)
+        remaining = len([t for t in p.tasks if t.status == "pending"])
+        console.print(f"[#7cffb0]done[/] ({time.time()-t0:.1f}s) · {remaining} pending")
+    except Exception as e:
+        _plan.mark(p, task.id, status="failed", result=str(e), thread_id=thread)
+        console.print(f"[red]failed[/] {e}")
+
+
+def _handle_compact(args: list[str], console: Console, thread: str) -> None:
+    """/compact — summarize old turns into the 'threads' memory tier."""
+    from nexus import compaction as _compact
+
+    keep = 10
+    if args and args[0].isdigit():
+        keep = int(args[0])
+    console.print(f"[dim]compacting · keeping last {keep} events…[/]")
+    with Thinking(console) as t:
+        t.set_verb("Compacting")
+        report = _compact.compact(thread, keep_recent=keep)
+    if report.get("ok"):
+        console.print(
+            f"[#7cffb0]compacted[/] · {report['compacted_events']} events → "
+            f"{report['summary_chars']} char summary in threads tier"
+        )
+    else:
+        console.print(f"[dim]{report.get('reason', 'nothing to do')}[/]")
+
+
+def _handle_rewind(args: list[str], console: Console, oracle, thread: str) -> int | None:
+    """/rewind N — drop the last N agent turns from LangGraph checkpoints."""
+    n = 1
+    if args and args[0].isdigit():
+        n = int(args[0])
+    try:
+        cfg = {"configurable": {"thread_id": thread}}
+        ckpts = list(oracle.graph.get_state_history(cfg))
+        if len(ckpts) <= n:
+            console.print(f"[yellow]only {len(ckpts)} checkpoints exist · can't rewind {n}[/]")
+            return None
+        target = ckpts[n]  # nth back
+        oracle.graph.update_state(
+            {**cfg, "checkpoint_id": target.config["configurable"]["checkpoint_id"]},
+            {},
+        )
+        console.print(f"[#7cffb0]rewound {n} turn(s)[/]")
+    except Exception as e:
+        console.print(f"[red]rewind failed[/] {type(e).__name__}: {e}")
+    return None
+
+
+def _handle_sessions(console: Console) -> None:
+    """/sessions — list past threads."""
+    from nexus import sessions as _s
+
+    threads = _s.list_threads()
+    if not threads:
+        console.print("[dim]no recorded sessions yet[/]")
+        return
+    console.print()
+    console.print(f"[bold #c77dff]sessions[/] · {len(threads)}")
+    for tid in threads[-30:]:
+        events = _s.read_thread(tid, limit=1)
+        first = events[0] if events else {}
+        console.print(f"  [cyan]{tid}[/]  [dim]{first.get('kind', '')}[/]")
+    console.print()
+    console.print("[dim]/resume <thread_id> to jump back[/]")
+
+
+def _handle_resume(args: list[str], console: Console) -> str | None:
+    """/resume <thread_id> — switch to a past thread."""
+    if not args:
+        console.print("[yellow]usage: /resume <thread_id>[/]")
+        return None
+    return args[0]
 
 
 def _handle_model(args: list[str], console: Console) -> None:
@@ -740,6 +907,32 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                     continue
                 if cmd == "/frontier":
                     _handle_frontier(args, console)
+                    continue
+                if cmd == "/cost":
+                    _handle_cost(console, thread)
+                    continue
+                if cmd == "/plan":
+                    _handle_plan(args, console, thread)
+                    continue
+                if cmd == "/execute":
+                    _handle_execute(args, console, oracle, thread)
+                    continue
+                if cmd == "/compact":
+                    _handle_compact(args, console, thread)
+                    continue
+                if cmd == "/rewind":
+                    _handle_rewind(args, console, oracle, thread)
+                    continue
+                if cmd == "/sessions":
+                    _handle_sessions(console)
+                    continue
+                if cmd == "/resume":
+                    new_thread = _handle_resume(args, console)
+                    if new_thread:
+                        oracle.close()
+                        thread = new_thread
+                        oracle = Oracle(thread_id=thread)
+                        console.print(f"[dim]resumed thread: {thread}[/]")
                     continue
                 if cmd == "/paste":
                     pasted = _handle_paste(console)
