@@ -49,8 +49,8 @@ def cli(ctx: click.Context, thread: str):
 
 @cli.command()
 def version():
-    """Print Oracle version."""
-    console.print(f"[bold cyan]oracle[/] [dim]v{__version__}[/]")
+    """Print Trinity Nexus version."""
+    console.print(f"[bold #c77dff]trinity-nexus[/] [dim]v{__version__}[/] [dim](omega foundation)[/]")
 
 
 @cli.command()

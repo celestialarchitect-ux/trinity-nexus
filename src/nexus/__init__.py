@@ -1,11 +1,11 @@
-"""Oracle — sovereign personal AI prototype."""
+"""Trinity Nexus — sovereign adaptive intelligence (Omega Foundation 1.0)."""
 
 from __future__ import annotations
 
 import io as _io
 import sys as _sys
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 # Force UTF-8 on Windows consoles so Unicode banner + qwen3 output render right.
 # Applied on package import so every entry point (CLI, REPL, tests) gets it.
