@@ -1,13 +1,15 @@
-"""Oracle REPL — the default experience when you type `oracle`.
+"""Trinity Nexus REPL.
 
-- Boots with the neon-purple ORACLE banner
-- Uses prompt-toolkit for a real terminal input (history, arrow keys, Ctrl-R)
-- Streams responses via the LangGraph agent
-- Slash commands: /help /memory /skills /reflect /evolve /reset /thread /exit
+Default experience when the user types `nexus`. Renders the neon-purple
+banner, prompt-toolkit input with Shift+Enter multiline, slash commands
+for every constitutional surface (§04 onboarding, §13 modes, §06 9-tier
+memory, §19 subagents, §29 dangerous-op gate), and Claude-Code-style
+streaming with esoteric thinking verbs.
 """
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -15,48 +17,71 @@ from langchain_core.messages import AIMessage, ToolMessage
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 
 from nexus import __version__
+from nexus import hooks as _hooks
 from nexus.banner import render_banner
 from nexus.config import settings
 from nexus.thinking import Thinking
 
 
-HISTORY_PATH = Path.home() / ".oracle_history"
+HISTORY_PATH = Path.home() / ".nexus_history"
 
 
 HELP_TEXT = """\
-**commands**
-  /help            show this help
-  /memory          open the memory menu (stats · core · recall · remember)
-  /skills          list skills in the library
-  /reflect         review recent turns, surface themes + facts
-  /evolve <intent> propose + test + promote a new skill for <intent>
-  /reset           start a new thread (keeps memory, forgets current chat)
-  /thread [id]     show or switch thread
-  /clear           clear the screen
-  /exit            leave (Ctrl-D also works)
+**commands** (§04/§13/§06/§19/§29)
 
-type anything else to talk to Oracle.
+  /help                show this help
+  /onboard             walk §04/§23/§24 orientation to build the USER MAP
+  /user-map            print the active USER MAP
+  /mode [name|list|off] switch operating mode (§13). Names: architect,
+                       builder, strategist, codex, critic, executor,
+                       mirror, research, memory, evolution, governor,
+                       orchestrator
+  /memory [tier] [read|write|append text]
+                       inspect / edit the 9-tier memory (§06)
+                       tiers: core, projects, strategic, creative,
+                              technical, personal, protected, threads,
+                              artifacts
+  /skills              list the skill library
+  /reflect             review recent turns, surface themes + facts
+  /evolve <intent>     propose + test + promote a new skill
+  /spawn <task>        run a sub-agent on a self-contained task (§19)
+  /dangerous [on|off]  toggle destructive-command unlock (§29)
+  /paste               open $EDITOR / notepad for a big multi-line prompt
+  /reset               new thread (memory kept, chat context dropped)
+  /thread [id]         show or switch thread
+  /clear               clear screen, redraw banner
+  /exit                leave (Ctrl-D works too)
+
+type anything else to talk to Trinity Nexus.
+shift+enter = newline · enter = submit
 """
 
 
 def _build_session() -> PromptSession:
+    """Prompt with history + Shift+Enter newline, Enter submit."""
     bindings = KeyBindings()
-    # Nothing custom yet — placeholder for future bindings
+
+    # Shift+Enter → insert newline (when terminal supports Meta/Esc+Enter)
+    @bindings.add(Keys.Escape, Keys.Enter)
+    def _(event):
+        event.current_buffer.insert_text("\n")
+
     return PromptSession(
         history=FileHistory(str(HISTORY_PATH)),
         enable_history_search=True,
         mouse_support=False,
+        multiline=False,
         key_bindings=bindings,
     )
 
 
 def _tool_call_line(name: str, args: dict) -> str:
-    """Claude-Code-style tool call: `name(key=preview, …)`."""
     if not args:
         return f"{name}()"
     parts = []
@@ -69,7 +94,6 @@ def _tool_call_line(name: str, args: dict) -> str:
 
 
 def _condense_tool_result(content: str) -> str:
-    """A one-line summary of a tool's output for inline display."""
     if not content:
         return "(no output)"
     one = " ".join(content.split())
@@ -77,22 +101,16 @@ def _condense_tool_result(content: str) -> str:
 
 
 def _stream_answer(oracle, prompt: str, console: Console) -> str:
-    """Stream the agent's reply with Claude-Code-style UX:
-
-      ✦ Channeling… (4s)           ← spinner before first token
-      ✦ retrieve_notes(query=…)    ← on tool call
-        ⎿ 3 hits · oracle, memory, …
-      <streamed markdown answer>
-    """
     final_text = ""
     seen_tool_ids: set[str] = set()
     shown_first_text = False
+
+    _hooks.run("pre_prompt", {"prompt": prompt, "thread": oracle.thread_id})
 
     with Thinking(console) as thinking:
         live: Live | None = None
         try:
             for msg in oracle.stream(prompt):
-                # Tool invocation announcement
                 if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
                     for tc in msg.tool_calls:
                         tc_id = tc.get("id") or f"{tc.get('name')}-{len(seen_tool_ids)}"
@@ -103,20 +121,20 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                         console.print(
                             f"[bold #b23bf2]✦[/] [dim]{_tool_call_line(tc.get('name', '?'), tc.get('args', {}))}[/]"
                         )
+                        _hooks.run("pre_tool", {"name": tc.get("name"), "args": tc.get("args")})
                         thinking.resume(verb="Invoking")
                     continue
 
-                # Tool result
                 if isinstance(msg, ToolMessage):
                     content = (getattr(msg, "content", "") or "")
                     if isinstance(content, list):
                         content = " ".join(str(c) for c in content)
                     thinking.pause()
                     console.print(f"  [dim]⎿[/] [dim]{_condense_tool_result(str(content))}[/]")
+                    _hooks.run("post_tool", {"content": str(content)[:2000]})
                     thinking.resume(verb="Receiving")
                     continue
 
-                # Final assistant text
                 if isinstance(msg, AIMessage):
                     text = (getattr(msg, "content", "") or "").strip()
                     if not text or text == final_text:
@@ -136,47 +154,182 @@ def _stream_answer(oracle, prompt: str, console: Console) -> str:
                     live.__exit__(None, None, None)
                 except Exception:
                     pass
+
+    _hooks.run("post_response", {"response": final_text[:4000], "thread": oracle.thread_id})
     return final_text
 
 
-def _handle_memory(console: Console) -> None:
-    from nexus.memory import MemoryTiers
-
-    tiers = MemoryTiers()
-    console.print()
-    console.print(f"[bold #c77dff]memory[/]")
-    console.print(f"  core:     {tiers.core.size()} chars")
-    console.print(f"  recall:   {tiers.recall.count()} turns")
-    console.print(f"  archival: {tiers.archival.count()} entries")
-    console.print()
-    console.print("[dim]/memory core     — print core memory[/]")
-    console.print("[dim]/memory recall Q — archival semantic search[/]")
-    console.print("[dim]/memory remember F — store a fact[/]\n")
+# ---------- slash-command handlers ----------
 
 
-def _handle_memory_sub(args: list[str], console: Console) -> None:
-    from nexus.memory import MemoryTiers
+def _handle_memory(args: list[str], console: Console) -> None:
+    """/memory [tier] [read|write|append text…]"""
+    from nexus.memory.nine_tier import NineTier, TIER_LABELS
 
-    tiers = MemoryTiers()
+    nine = NineTier()
     if not args:
-        _handle_memory(console)
+        console.print()
+        console.print("[bold #c77dff]memory tiers (§06)[/]")
+        for t in nine.all():
+            size = t.size()
+            console.print(f"  [cyan]{t.key:10s}[/] {t.label}  [dim]{size} chars[/]")
+        console.print()
+        console.print("[dim]/memory <tier>              read tier[/]")
+        console.print("[dim]/memory <tier> append text  append a line[/]")
+        console.print("[dim]/memory <tier> write text   replace content[/]")
         return
-    sub, *rest = args
-    if sub == "core":
-        console.print(Markdown(tiers.core.read()))
-    elif sub == "recall" and rest:
-        q = " ".join(rest)
-        hits = tiers.archival.query(q, k=5)
-        if not hits:
-            console.print("[dim]no hits[/]")
-        for h in hits:
-            console.print(f"- [dim]{h.get('tags', '')}[/] {h['content'][:200]}")
-    elif sub == "remember" and rest:
-        fact = " ".join(rest)
-        mid = tiers.remember(fact, tags=["repl"], source="repl")
-        console.print(f"[#c77dff]stored[/] id={mid[:8]}  {fact[:80]}")
+
+    key, *rest = args
+    tier = nine.get(key)
+    if not tier:
+        console.print(f"[yellow]unknown tier {key!r}[/]  valid: {', '.join(TIER_LABELS.keys())}")
+        return
+    if not rest:
+        console.print(Markdown(tier.read() or "_empty_"))
+        return
+    sub = rest[0].lower()
+    payload = " ".join(rest[1:]).strip()
+    if sub == "append" and payload:
+        tier.append(payload)
+        console.print(f"[#7cffb0]appended[/] → {tier.label}")
+    elif sub == "write" and payload:
+        tier.write(payload)
+        console.print(f"[#7cffb0]replaced[/] → {tier.label}")
     else:
-        _handle_memory(console)
+        console.print("[yellow]usage: /memory <tier> [read|write|append] <text>[/]")
+
+
+def _handle_mode(args: list[str], console: Console) -> None:
+    from nexus.modes import MODES, describe_all, get_active, set_active
+
+    if not args or args[0] == "list":
+        active = get_active()
+        console.print()
+        console.print("[bold #c77dff]operating modes (§13)[/]")
+        for key, one in describe_all():
+            marker = "●" if (active and active.key == key) else " "
+            color = "#c77dff" if marker == "●" else "dim"
+            console.print(f"  [{color}]{marker}[/] [cyan]{key:13s}[/] [dim]{one}[/]")
+        console.print()
+        if active:
+            console.print(f"[dim]active: {active.name}[/]")
+        console.print("[dim]/mode <name>  to switch · /mode off  to clear[/]")
+        return
+    target = args[0].lower()
+    mode = set_active(target)
+    if target in {"off", "none", "clear", "default"}:
+        console.print("[dim]mode cleared[/]")
+    elif mode:
+        console.print(f"[#9d00ff]mode → {mode.name}[/]  [dim]{mode.one_line}[/]")
+    else:
+        console.print(f"[yellow]unknown mode {target!r}[/] · try /mode list")
+
+
+def _handle_onboard(console: Console) -> None:
+    from nexus.onboarding import ORIENTATION_QUESTIONS, UserMap, save_user_map
+
+    console.print()
+    console.print("[bold #c77dff]onboarding — §04 / §23 / §24[/]")
+    console.print(
+        "[dim]i'll ask four short questions. skip any with empty-enter.[/]\n"
+    )
+    answers: dict[str, str] = {}
+    for key, q in ORIENTATION_QUESTIONS:
+        try:
+            ans = console.input(f"[#c77dff]?[/] {q}\n  > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("[dim]onboarding cancelled[/]")
+            return
+        answers[key] = ans
+
+    try:
+        name = console.input(
+            "[#c77dff]?[/] what name should I call you? (optional)\n  > "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        name = ""
+
+    um = UserMap(
+        preferred_name=name,
+        primary_mission=answers.get("mission", ""),
+        operating_role=answers.get("role", ""),
+        mind=answers.get("mental", ""),
+        current_priority=answers.get("priority", ""),
+    )
+    path = save_user_map(um)
+    console.print(f"\n[#7cffb0]USER MAP written[/] → {path}\n")
+    console.print("[dim]it's loaded into every turn now. edit the markdown anytime.[/]")
+
+
+def _handle_user_map(console: Console) -> None:
+    from nexus.onboarding import load_user_map
+
+    body = load_user_map().strip()
+    if not body:
+        console.print("[dim]no USER MAP yet · run /onboard[/]")
+        return
+    console.print(Markdown(body))
+
+
+def _handle_spawn(args: list[str], console: Console) -> None:
+    from nexus.agent import Oracle
+    import uuid as _uuid
+
+    if not args:
+        console.print("[yellow]usage: /spawn <task description>[/]")
+        return
+    task = " ".join(args)
+    tid = f"sub-{_uuid.uuid4().hex[:10]}"
+    console.print(f"[dim]spawning sub-agent · thread={tid}[/]")
+    sub = Oracle(thread_id=tid)
+    try:
+        with Thinking(console) as t:
+            t.set_verb("Summoning")
+            answer = sub.ask(task)
+    finally:
+        sub.close()
+    console.print(Markdown(answer or "_no response_"))
+
+
+def _handle_dangerous(args: list[str], console: Console) -> None:
+    target = (args[0].lower() if args else None)
+    current = os.environ.get("NEXUS_ALLOW_DANGEROUS") == "1"
+    if target == "on":
+        os.environ["NEXUS_ALLOW_DANGEROUS"] = "1"
+        console.print("[bold red]DANGEROUS OPS UNLOCKED[/] · run_command will execute destructive patterns.")
+        console.print("[dim]disable with /dangerous off · lasts until session end[/]")
+    elif target == "off":
+        os.environ.pop("NEXUS_ALLOW_DANGEROUS", None)
+        console.print("[#7cffb0]guard restored[/] · destructive patterns blocked")
+    else:
+        state = "[red]UNLOCKED[/]" if current else "[#7cffb0]guarded[/]"
+        console.print(f"destructive ops: {state} · /dangerous on|off to toggle")
+
+
+def _handle_paste(console: Console) -> str:
+    """Open the user's $EDITOR (or notepad on Windows) and return what they saved."""
+    import subprocess
+    import tempfile
+
+    editor = os.environ.get("EDITOR") or ("notepad" if os.name == "nt" else "nano")
+    with tempfile.NamedTemporaryFile(
+        mode="w+", suffix=".txt", delete=False, encoding="utf-8"
+    ) as f:
+        path = f.name
+    try:
+        subprocess.run([editor, path])
+        with open(path, "r", encoding="utf-8") as f:
+            body = f.read().strip()
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    if not body:
+        console.print("[dim]paste cancelled (empty)[/]")
+        return ""
+    console.print(f"[dim]paste loaded · {len(body)} chars, {body.count(chr(10))+1} lines[/]")
+    return body
 
 
 def _handle_skills(console: Console) -> None:
@@ -185,7 +338,9 @@ def _handle_skills(console: Console) -> None:
     reg = SkillRegistry()
     reg.load_all()
     console.print()
-    console.print(f"[bold #c77dff]skills[/]  total={reg.count()}  avg_conf={reg.stats()['avg_confidence']}")
+    console.print(
+        f"[bold #c77dff]skills[/]  total={reg.count()}  avg_conf={reg.stats()['avg_confidence']}"
+    )
     for s in sorted(reg.all(), key=lambda x: x.id):
         origin = {"seed": "·", "self_written": "★", "mesh": "◆"}.get(s.origin, "·")
         console.print(f"  [dim]{origin}[/] [cyan]{s.id:22s}[/] {s.description[:70]}")
@@ -198,22 +353,17 @@ def _handle_reflect(console: Console) -> None:
     console.print("[dim]reflecting on recent turns…[/]")
     rep = _reflect(n_turns=40, apply=False, remember_facts=False)
     console.print(f"[bold #c77dff]reflect[/] · {rep.turns_reviewed} turns reviewed")
-    if rep.themes:
-        console.print("  [dim]themes:[/]")
-        for t in rep.themes:
-            console.print(f"    · {t}")
-    if rep.facts_to_remember:
-        console.print("  [dim]facts:[/]")
-        for f in rep.facts_to_remember:
-            console.print(f"    · {f}")
-    if rep.notes:
-        for n in rep.notes:
-            console.print(f"  [dim]note: {n}[/]")
+    for t in rep.themes:
+        console.print(f"  · theme: {t}")
+    for f in rep.facts_to_remember:
+        console.print(f"  · fact: {f}")
+    for n in rep.notes:
+        console.print(f"  [dim]note: {n}[/]")
     console.print()
 
 
 def _handle_evolve(args: list[str], console: Console) -> None:
-    from nexus.skills.evolve import evolve_from_router_gap, evolve_skill
+    from nexus.skills.evolve import evolve_from_router_gap
 
     if not args:
         console.print("[yellow]usage: /evolve <intent description>[/]")
@@ -234,19 +384,30 @@ def _handle_evolve(args: list[str], console: Console) -> None:
         console.print(f"[yellow]rejected[/]  {result.rejection_reasons}  ({dt:.1f}s)")
 
 
+# ---------- main loop ----------
+
+
 def run_repl(*, console: Console, thread: str = "default") -> None:
-    """Main loop. Returns when the user exits."""
     from nexus.agent import Oracle
+    from nexus.onboarding import is_onboarded
 
     render_banner(
         console=console,
         model=settings.oracle_primary_model,
         device=settings.oracle_device_name,
         version=__version__,
+        instance=getattr(settings, "oracle_instance", "Nexus"),
     )
 
     oracle = Oracle(thread_id=thread)
     session = _build_session()
+
+    # First-run orientation (§23) — non-blocking invite, not a forced intake.
+    if not is_onboarded():
+        console.print(
+            "[dim]first run detected · I am Trinity Nexus. type[/] [#c77dff]/onboard[/] "
+            "[dim]to orient me, or just start talking.[/]\n"
+        )
 
     try:
         while True:
@@ -261,7 +422,6 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
             if not user_in:
                 continue
 
-            # Slash commands
             if user_in.startswith("/"):
                 parts = user_in.split()
                 cmd, args = parts[0].lower(), parts[1:]
@@ -277,10 +437,20 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                         model=settings.oracle_primary_model,
                         device=settings.oracle_device_name,
                         version=__version__,
+                        instance=getattr(settings, "oracle_instance", "Nexus"),
                     )
                     continue
                 if cmd == "/memory":
-                    _handle_memory_sub(args, console)
+                    _handle_memory(args, console)
+                    continue
+                if cmd == "/mode":
+                    _handle_mode(args, console)
+                    continue
+                if cmd == "/onboard":
+                    _handle_onboard(console)
+                    continue
+                if cmd in {"/user-map", "/user_map", "/usermap"}:
+                    _handle_user_map(console)
                     continue
                 if cmd == "/skills":
                     _handle_skills(console)
@@ -291,6 +461,18 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                 if cmd == "/evolve":
                     _handle_evolve(args, console)
                     continue
+                if cmd == "/spawn":
+                    _handle_spawn(args, console)
+                    continue
+                if cmd == "/dangerous":
+                    _handle_dangerous(args, console)
+                    continue
+                if cmd == "/paste":
+                    pasted = _handle_paste(console)
+                    if pasted:
+                        user_in = pasted  # fall through to chat turn
+                    else:
+                        continue
                 if cmd == "/reset":
                     oracle.close()
                     thread = f"{thread}-{int(time.time())}"
@@ -304,14 +486,15 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
                         oracle = Oracle(thread_id=thread)
                     console.print(f"[dim]thread: {thread}[/]")
                     continue
-                console.print(f"[yellow]unknown command: {cmd}[/]  try /help")
-                continue
+                if cmd != "/paste":  # /paste already fell through
+                    console.print(f"[yellow]unknown command: {cmd}[/]  try /help")
+                    continue
 
-            # Chat turn
             t0 = time.perf_counter()
             _stream_answer(oracle, user_in, console)
             console.print(f"[dim]({time.perf_counter() - t0:.1f}s)[/]\n")
     finally:
+        _hooks.run("pre_exit", {"thread": oracle.thread_id})
         oracle.close()
 
     console.print("\n[dim]session ended.[/]")

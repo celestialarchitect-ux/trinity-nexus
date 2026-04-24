@@ -155,14 +155,28 @@ def doctor():
 
 
 @cli.command()
-@click.argument("prompt", nargs=-1, required=True)
+@click.argument("prompt", nargs=-1, required=False)
 @click.option("--thread", default="default")
 @click.option("--stream/--no-stream", default=True)
 def ask(prompt, thread: str, stream: bool):
-    """Ask Oracle a question."""
+    """Ask Trinity Nexus a question. Use `-` to read the prompt from stdin."""
     from nexus.agent import Oracle
 
-    question = " ".join(prompt)
+    if prompt and list(prompt) == ["-"]:
+        question = sys.stdin.read().strip()
+    elif prompt:
+        question = " ".join(prompt).strip()
+    else:
+        # no args: read all of stdin (enables pipes like `type file | nexus ask`)
+        if sys.stdin.isatty():
+            console.print("[yellow]usage: nexus ask 'question' OR nexus ask - (stdin)[/]")
+            return
+        question = sys.stdin.read().strip()
+
+    if not question:
+        console.print("[yellow]empty prompt[/]")
+        return
+
     console.print(f"[dim]thread={thread} • model={settings.oracle_primary_model}[/]")
 
     t0 = time.perf_counter()

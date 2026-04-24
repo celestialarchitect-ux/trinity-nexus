@@ -49,9 +49,54 @@ def system_info() -> dict[str, str]:
     }
 
 
+# §29 — patterns that should never run without explicit user unlock.
+_DANGEROUS_PATTERNS = [
+    r"\brm\s+-rf?\s+/",
+    r"\brm\s+-rf?\s+\*",
+    r"\brm\s+-rf?\s+~",
+    r"\bmkfs\b",
+    r"\bdd\s+if=.*\bof=/dev",
+    r":\(\)\s*\{.*:\|:&\s*\};:",            # classic fork-bomb
+    r"\bshutdown\b",
+    r"\bhalt\b",
+    r"\breboot\b",
+    r"\bgit\s+reset\s+--hard\b",
+    r"\bgit\s+clean\s+-f\w*d",
+    r"\bgit\s+push\s+.*--force\b",
+    r"\bDROP\s+(TABLE|DATABASE)\b",
+    r"\bTRUNCATE\s+TABLE\b",
+    r"\bdocker\s+system\s+prune",
+    r"\bkubectl\s+delete\b",
+    r"\bformat\s+[A-Za-z]:",                # Windows format
+]
+
+
+def _is_dangerous(cmd: str) -> str | None:
+    if os.environ.get("NEXUS_ALLOW_DANGEROUS") == "1":
+        return None
+    for pat in _DANGEROUS_PATTERNS:
+        if re.search(pat, cmd, flags=re.IGNORECASE):
+            return pat
+    return None
+
+
 @tool
 def run_command(command: str, timeout_sec: int = 30) -> dict[str, Any]:
-    """Execute a shell command. Returns {stdout, stderr, returncode}."""
+    """Execute a shell command. Returns {stdout, stderr, returncode}.
+
+    Destructive commands are blocked by default (§29 Security Governor). Set
+    `NEXUS_ALLOW_DANGEROUS=1` or run `/dangerous` in the REPL to unlock.
+    """
+    danger = _is_dangerous(command)
+    if danger:
+        return {
+            "stdout": "",
+            "stderr": (
+                f"[blocked §29] command matches destructive pattern ({danger}). "
+                "Set NEXUS_ALLOW_DANGEROUS=1 or run /dangerous to override."
+            ),
+            "returncode": -3,
+        }
     try:
         result = subprocess.run(
             command,
@@ -310,12 +355,39 @@ def web_search(query: str, max_results: int = 8) -> list[dict]:
 
 @tool
 def remember(fact: str, tags: str = "") -> str:
-    """Store a durable fact in Oracle's archival memory. `tags` is comma-separated."""
+    """Store a durable fact in Trinity Nexus's archival memory. `tags` is comma-separated.
+
+    Prefer tagging with one of mind/soul/body (§07) plus a topical tag.
+    """
     from nexus.memory import MemoryTiers
 
     tag_list = [t.strip() for t in tags.split(",") if t.strip()]
     mid = MemoryTiers().remember(fact, tags=tag_list, source="agent")
     return f"remembered: id={mid} {fact[:80]}"
+
+
+# ---------- sub-agent (§19) ----------
+
+
+@tool
+def spawn_agent(task: str, thread_id: str = "") -> str:
+    """Spawn a sub-Nexus to run a self-contained task and return its final answer.
+
+    The sub-agent shares archival memory (so it can retrieve and remember) but
+    runs on its own thread so its conversation doesn't pollute the parent's
+    context. Use for: parallel research, focused sub-tasks, evaluator runs,
+    anything that would otherwise blow the parent's context budget.
+    """
+    from nexus.agent import Oracle  # local import to avoid circular
+    import uuid as _uuid
+
+    tid = thread_id or f"sub-{_uuid.uuid4().hex[:10]}"
+    sub = Oracle(thread_id=tid)
+    try:
+        answer = sub.ask(task)
+    finally:
+        sub.close()
+    return (answer or "")[:8000]
 
 
 # ---------- registry ----------
@@ -337,4 +409,6 @@ BUILTIN_TOOLS = [
     web_search,
     # memory
     remember,
+    # sub-agent
+    spawn_agent,
 ]

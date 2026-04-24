@@ -23,6 +23,9 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from nexus.config import settings
 from nexus.distillation.collector import InteractionCollector
 from nexus.memory import MemoryTiers
+from nexus.memory.nine_tier import NineTier
+from nexus.modes import overlay as mode_overlay
+from nexus.onboarding import to_prompt_block as user_map_block
 from nexus.project import load_instructions
 from nexus.prompts import build_system_prompt
 from nexus.retrieval.tool import retrieve_notes
@@ -74,15 +77,45 @@ def _make_graph(checkpoint_path: Path):
 def _build_system_with_context(
     memory: MemoryTiers, intent: str, thread_id: str
 ) -> SystemMessage:
+    """Assemble the full system prompt per turn.
+
+    Layers:
+      [constitution]          ← static identity + directives
+      [project instructions]  ← NEXUS.md / ORACLE.md walked from cwd
+      [USER MAP]              ← §24 memory/user_map.md
+      [9-tier memory]         ← §06 non-empty tiers
+      [ACTIVE MODE]           ← §13 overlay when set
+      [live memory]           ← core + archival (top-k) + recall (recent)
+    """
     base = build_system_prompt(
-        user=settings.oracle_user, device=settings.oracle_device_name
+        user=settings.oracle_user,
+        device=settings.oracle_device_name,
+        instance=getattr(settings, "oracle_instance", "Nexus"),
     )
-    ctx = memory.build_context(intent, thread_id=thread_id, archival_k=4, recall_n=6)
+    parts: list[str] = [base]
+
     instructions = load_instructions()
-    parts = [base]
     if instructions:
-        parts.append("## instructions\n" + instructions)
+        parts.append("## PROJECT INSTRUCTIONS\n" + instructions)
+
+    um = user_map_block()
+    if um:
+        parts.append(um)
+
+    try:
+        nine = NineTier().to_prompt_block(max_chars_each=600)
+        if nine:
+            parts.append(nine)
+    except Exception:
+        pass
+
+    mo = mode_overlay()
+    if mo:
+        parts.append(mo)
+
+    ctx = memory.build_context(intent, thread_id=thread_id, archival_k=4, recall_n=6)
     parts.append(ctx.to_prompt_block())
+
     return SystemMessage(content="\n\n".join(parts))
 
 
