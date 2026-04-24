@@ -15,6 +15,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, ToolMessage
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import Completer, Completion, PathCompleter
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -30,6 +31,69 @@ from nexus.thinking import Thinking
 
 
 HISTORY_PATH = Path.home() / ".nexus_history"
+
+
+SLASH_COMMANDS = [
+    "/help", "/status", "/exit", "/quit",
+    "/onboard", "/user-map",
+    "/mode", "/memory", "/skills", "/cost", "/rate",
+    "/plan", "/execute", "/compact", "/rewind",
+    "/sessions", "/resume", "/reset", "/thread",
+    "/reflect", "/evolve", "/spawn", "/trace",
+    "/frontier", "/model",
+    "/dangerous", "/safe", "/readonly", "/encrypt",
+    "/permissions", "/allow", "/deny",
+    "/paste", "/clear",
+]
+
+
+SHORTCUTS_TEXT = """\
+**keyboard shortcuts**
+
+  Enter            send message
+  Shift+Enter      insert newline (multi-line message)
+  Tab              autocomplete slash command or file path
+  ?                show this shortcuts reference
+  Ctrl+C           cancel current turn (press again to exit)
+  Ctrl+D           exit
+  Up / Down        history
+
+**input prefixes**
+
+  /command         slash command (see /help)
+  @path/to/file    attach file contents to your message
+  !shell command   run shell, result injected (bypasses agent decision)
+  #note to save    quick-add to archival memory, no agent round-trip
+
+Most commands also have CLI equivalents: `nexus ask`, `nexus frontier test`,
+`nexus doctor`, etc. Run `nexus --help` to see the full CLI.
+"""
+
+
+class _NexusCompleter(Completer):
+    """Tab-complete slash commands and @path references."""
+
+    def __init__(self):
+        self._path = PathCompleter(expanduser=True)
+
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        # slash-command completion at start of line
+        if text.startswith("/") and " " not in text:
+            for cmd in SLASH_COMMANDS:
+                if cmd.startswith(text):
+                    yield Completion(cmd, start_position=-len(text))
+            return
+        # @path completion — delegate to PathCompleter on the fragment
+        at_idx = text.rfind("@")
+        if at_idx >= 0 and (at_idx == 0 or text[at_idx - 1] in " \t\n"):
+            fragment = text[at_idx + 1:]
+            from prompt_toolkit.document import Document
+            sub = Document(fragment, cursor_position=len(fragment))
+            for c in self._path.get_completions(sub, complete_event):
+                yield Completion(
+                    c.text, start_position=c.start_position,
+                )
 
 
 HELP_TEXT = """\
@@ -87,14 +151,34 @@ shift+enter = newline · enter = submit
 """
 
 
-def _build_session() -> PromptSession | None:
-    """prompt-toolkit session if possible; None = caller falls back to input().
+def _bottom_toolbar_factory(get_state):
+    """Return a callable prompt-toolkit uses to render the bottom status bar."""
+    def render():
+        try:
+            state = get_state()
+        except Exception:
+            return ""
+        parts = [
+            f"  {state['instance']}",
+            f"model {state['model']}",
+            f"mode {state['mode'] or 'free'}",
+            f"thread {state['thread']}",
+        ]
+        if state.get("safe"):
+            parts.append("SAFE")
+        if state.get("readonly"):
+            parts.append("READONLY")
+        if state.get("dangerous"):
+            parts.append("DANGEROUS")
+        if state.get("cost_usd", 0.0) > 0:
+            parts.append(f"${state['cost_usd']:.3f}")
+        parts.append("? shortcuts · Tab complete · Ctrl+C cancel")
+        return "  ·  ".join(parts)
+    return render
 
-    prompt-toolkit's Windows backend (Win32Output) requires a real Windows
-    console — it raises NoConsoleScreenBufferError in Git Bash / MSYS / Cygwin
-    which would crash the REPL on startup. We return None in that case so the
-    main loop can use stdlib `input()` instead.
-    """
+
+def _build_session(get_state=None) -> PromptSession | None:
+    """prompt-toolkit session if possible; None = caller falls back to input()."""
     try:
         bindings = KeyBindings()
 
@@ -102,13 +186,18 @@ def _build_session() -> PromptSession | None:
         def _(event):
             event.current_buffer.insert_text("\n")
 
-        return PromptSession(
+        kwargs = dict(
             history=FileHistory(str(HISTORY_PATH)),
             enable_history_search=True,
             mouse_support=False,
             multiline=False,
             key_bindings=bindings,
+            completer=_NexusCompleter(),
+            complete_while_typing=False,
         )
+        if get_state is not None:
+            kwargs["bottom_toolbar"] = _bottom_toolbar_factory(get_state)
+        return PromptSession(**kwargs)
     except Exception:
         return None
 
@@ -151,6 +240,39 @@ def _tool_call_line(name: str, args: dict) -> str:
             s = s[:57] + "…"
         parts.append(f"{k}={s}")
     return f"{name}({', '.join(parts)})"
+
+
+def _expand_attachments(line: str, console: Console) -> str:
+    """Replace @path tokens with file contents inline so the agent sees them.
+
+    A token is a whitespace-separated word starting with @ whose rest is a
+    path. Missing files are left in place with a warning; they won't crash
+    the turn. Large files are truncated with a note.
+    """
+    import re as _re
+    from pathlib import Path as _P
+
+    MAX_ATTACH_BYTES = 64_000
+
+    def _sub(m):
+        p = m.group(1)
+        path = _P(p).expanduser()
+        if not path.is_absolute():
+            path = (_P.cwd() / path).resolve()
+        if not path.exists():
+            console.print(f"[yellow]@{p}: not found[/]")
+            return f"@{p}"
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as e:
+            console.print(f"[yellow]@{p}: {e}[/]")
+            return f"@{p}"
+        if len(text.encode("utf-8", errors="ignore")) > MAX_ATTACH_BYTES:
+            text = text[:MAX_ATTACH_BYTES] + "\n…[truncated]"
+        console.print(f"[dim]attached @{p} ({len(text):,} chars)[/]")
+        return f"\n\n<FILE path={path}>\n{text}\n</FILE>\n\n"
+
+    return _re.sub(r"(?:^|(?<=\s))@(\S+)", _sub, line)
 
 
 def _condense_tool_result(content: str) -> str:
@@ -980,12 +1102,35 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
     )
 
     oracle = Oracle(thread_id=thread)
-    session = _build_session()
+
+    # State accessor for the bottom status toolbar. Captured by closure so
+    # it reflects the current thread / mode / flags every render.
+    def _state():
+        import os as _os
+        from nexus import cost as _cost
+        from nexus.modes import get_active as _active_mode
+        m = _active_mode()
+        c = _cost.session_total(thread)
+        return {
+            "instance": getattr(settings, "oracle_instance", "Nexus"),
+            "model": settings.oracle_primary_model,
+            "mode": m.name if m else None,
+            "thread": thread,
+            "safe": _os.environ.get("NEXUS_SAFE") == "1",
+            "readonly": _os.environ.get("NEXUS_READONLY") == "1",
+            "dangerous": _os.environ.get("NEXUS_ALLOW_DANGEROUS") == "1",
+            "cost_usd": c["usd"],
+        }
+
+    session = _build_session(get_state=_state)
     if session is None:
         console.print(
-            "[dim](prompt-toolkit unavailable in this shell — using plain input. "
-            "Shift+Enter newline + history won't work; /paste still will.)[/]\n"
+            "[dim](prompt-toolkit unavailable in this shell — plain input mode. "
+            "No Tab-complete, no Shift+Enter, no status bar. /paste still works.)[/]\n"
         )
+
+    # Double-Ctrl+C tracker
+    _last_ctrl_c = [0.0]
 
     # First-run orientation (§23) — non-blocking invite, not a forced intake.
     if not is_onboarded():
@@ -999,13 +1144,61 @@ def run_repl(*, console: Console, thread: str = "default") -> None:
             try:
                 user_in = _read_line(session, console).strip()
             except KeyboardInterrupt:
-                console.print("[dim](ctrl-c — type /exit to quit)[/]")
+                now = time.time()
+                if now - _last_ctrl_c[0] < 2.0:
+                    console.print("[dim]goodbye.[/]")
+                    break
+                _last_ctrl_c[0] = now
+                console.print("[dim](ctrl-c once more within 2s to exit · /exit also works)[/]")
                 continue
             except EOFError:
                 break
 
             if not user_in:
                 continue
+
+            # ? → shortcuts reference
+            if user_in in {"?", "/?", "/shortcuts"}:
+                console.print(Markdown(SHORTCUTS_TEXT))
+                continue
+
+            # !<shell cmd> → bash passthrough, no agent round-trip
+            if user_in.startswith("!"):
+                cmd = user_in[1:].strip()
+                if not cmd:
+                    console.print("[yellow]usage: !<shell command>[/]")
+                    continue
+                try:
+                    from nexus.tools import run_command as _rc
+                    r = _rc.invoke({"command": cmd, "timeout_sec": 30})
+                    if r.get("stdout"):
+                        console.print(r["stdout"])
+                    if r.get("stderr"):
+                        console.print(f"[yellow]{r['stderr']}[/]")
+                    console.print(f"[dim]rc={r['returncode']}[/]\n")
+                except Exception as e:
+                    console.print(f"[red]shell failed[/] {type(e).__name__}: {e}")
+                continue
+
+            # #<text> → quick-add to archival memory
+            if user_in.startswith("#"):
+                fact = user_in[1:].strip()
+                if not fact:
+                    console.print("[yellow]usage: #<fact to remember>[/]")
+                    continue
+                try:
+                    from nexus.memory import MemoryTiers
+                    mid = MemoryTiers().remember(fact, tags=["repl"], source="hash")
+                    console.print(f"[#c77dff]remembered[/] id={mid[:8]}  {fact[:80]}")
+                except Exception as e:
+                    console.print(f"[red]remember failed[/] {e}")
+                continue
+
+            # @path → attach file contents to the next message
+            if user_in.startswith("@") or " @" in " " + user_in:
+                user_in = _expand_attachments(user_in, console)
+                if not user_in:
+                    continue
 
             if user_in.startswith("/"):
               try:

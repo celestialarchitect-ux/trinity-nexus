@@ -49,7 +49,7 @@ NEON_PURPLE = [
     "#5a00a8",
 ]
 
-NETWORK_GREEN = "#00ff88"
+ACCENT = "#c77dff"  # neon purple top of the gradient
 
 
 def render_banner(
@@ -76,27 +76,29 @@ def render_banner(
         color = NEON_PURPLE[min(i, len(NEON_PURPLE) - 1)]
         logo.append("  " + line + "\n", style=f"bold {color}")
 
-    # Network line — green (as requested)
+    # Network line — neon purple
     network = Text()
-    network.append("  Trinity Intelligence Network\n", style=f"bold {NETWORK_GREEN}")
+    network.append("  Trinity Intelligence Network\n", style=f"bold {ACCENT}")
 
-    # Help line
+    # Help + shortcuts hint
     help_line = Text()
-    help_line.append("  /help", style=f"bold {NETWORK_GREEN}")
-    help_line.append(" for commands  ·  ", style="dim")
-    help_line.append("/exit", style=f"bold {NETWORK_GREEN}")
+    help_line.append("  /help", style=f"bold {ACCENT}")
+    help_line.append(" commands  ·  ", style="dim")
+    help_line.append("?", style=f"bold {ACCENT}")
+    help_line.append(" shortcuts  ·  ", style="dim")
+    help_line.append("/exit", style=f"bold {ACCENT}")
     help_line.append(" to leave\n", style="dim")
 
     # Cwd + model + instance
     info = Text()
     info.append(f"  cwd:      ", style="dim")
-    info.append(f"{os.getcwd()}\n", style=f"{NETWORK_GREEN}")
+    info.append(f"{os.getcwd()}\n", style=f"{ACCENT}")
     if model:
         info.append(f"  model:    ", style="dim")
-        info.append(f"{model}", style=f"{NETWORK_GREEN}")
+        info.append(f"{model}", style=f"{ACCENT}")
         if instance:
             info.append(f"   ·   instance  ", style="dim")
-            info.append(f"{instance}", style=f"{NETWORK_GREEN}")
+            info.append(f"{instance}", style=f"{ACCENT}")
         info.append("\n")
     if version:
         info.append(f"  v{version}", style="dim")
