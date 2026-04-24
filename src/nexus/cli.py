@@ -668,7 +668,7 @@ def memory_recall(query, k: int):
 @cli.command()
 @click.option("-n", "--n-turns", default=40, help="How many recent turns to review.")
 @click.option("--apply/--preview", default=False, help="Apply proposed core edits.")
-@click.option("--remember/--no-remember", default=True, help="Store proposed facts in archival.")
+@click.option("--remember/--no-remember", default=False, help="Store proposed facts in archival (default: preview only).")
 def reflect(n_turns: int, apply: bool, remember: bool):
     """Review recent turns; surface themes, facts, and core-memory edits."""
     from nexus.reflect import reflect as _reflect

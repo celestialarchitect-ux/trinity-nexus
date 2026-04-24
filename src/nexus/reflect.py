@@ -71,12 +71,23 @@ def _chat(client: ollama.Client, *, system: str, prompt: str, max_tokens: int = 
             "num_predict": max_tokens,
             "num_ctx": settings.oracle_num_ctx,
         },
+        format="json",
     )
     try:
         r = client.chat(**kw, think=False)
     except TypeError:
         r = client.chat(**kw)
-    return r["message"]["content"] or ""
+    content = r["message"]["content"] or ""
+    # qwen3 sometimes wraps output in <think>...</think> even with think=False.
+    if "<think>" in content:
+        import re
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+        if "<think>" in content:
+            if "</think>" in content:
+                content = content.split("</think>", 1)[1]
+            else:
+                content = content.split("<think>", 1)[0]
+    return content.strip()
 
 
 def _parse(raw: str) -> dict:
@@ -116,12 +127,14 @@ def reflect(
     *,
     n_turns: int = 40,
     apply: bool = False,
-    remember_facts: bool = True,
+    remember_facts: bool = False,
 ) -> ReflectionReport:
     """Run one reflection cycle.
 
     If `apply=True` and `core_edits` is non-empty, core memory is replaced.
-    If `remember_facts=True`, facts_to_remember are stored to archival memory.
+    If `remember_facts=True`, facts_to_remember are stored to archival memory
+    (default False — qwen3:4b hallucinates, and silent fact storage is
+    irreversible-in-spirit; opt in explicitly when you trust the output).
     """
     tiers = MemoryTiers()
     recent = tiers.recall.recent(n=n_turns)
