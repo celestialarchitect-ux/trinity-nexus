@@ -1,6 +1,6 @@
 """Review a code snippet for bugs, security, style."""
 
-from nexus.skills.base import Skill, SkillContext, llm_complete
+from nexus.skills.base import Skill, SkillContext, llm_json
 
 
 class CodeReview(Skill):
@@ -17,38 +17,40 @@ class CodeReview(Skill):
         lang = inputs.get("language", "auto-detect")
         focus = inputs.get("focus", "")
         system = (
-            "You are a senior engineer reviewing code. Lead with the WORST issue. "
-            "Cite line numbers. Don't praise. Don't rewrite unless asked."
+            "You are a senior engineer reviewing code. Lead with the worst "
+            "issue. Cite line numbers when possible. Don't praise. Don't rewrite "
+            "unless asked."
+        )
+        schema = (
+            'Output JSON: {"verdict":"ship"|"ship-with-fixes"|"block",'
+            '"issues":[{"severity":"low"|"med"|"high","summary":"what is wrong",'
+            '"line":1,"fix":"one-line fix"}, ...]}\n'
+            "Order issues from worst to least severe."
         )
         prompt = (
             f"Language: {lang}. "
             + (f"Focus: {focus}. " if focus else "")
-            + "\n\nCode:\n```\n"
-            + code
-            + "\n```\n\nReturn:\n"
-            "VERDICT: <ship | ship-with-fixes | block> — <one-line why>\n\n"
-            "ISSUES:\n"
-            "1) [SEVERITY] <summary>\n   LINE: <n>\n   FIX: <one-line fix>\n"
-            "2) ...\n"
+            + "\n\nCode:\n```\n" + code + "\n```"
         )
-        raw = llm_complete(
-            ctx, system=system, prompt=prompt, max_tokens=1200, temperature=0.2
+        data = llm_json(
+            ctx, system=system, prompt=prompt, schema_hint=schema,
+            temperature=0.2, max_tokens=1400,
+            default={"verdict": "", "issues": []},
         )
-        verdict = ""
-        if "VERDICT:" in raw:
-            verdict = raw.split("VERDICT:", 1)[1].split("\n", 1)[0].strip()
         issues: list[dict] = []
-        current: dict = {}
-        for line in raw.splitlines():
-            ls = line.strip()
-            if ls and ls[0].isdigit() and ")" in ls:
-                if current:
-                    issues.append(current)
-                current = {"summary": ls}
-            elif ls.startswith("LINE:"):
-                current["line"] = ls.split(":", 1)[1].strip()
-            elif ls.startswith("FIX:"):
-                current["fix"] = ls.split(":", 1)[1].strip()
-        if current:
-            issues.append(current)
-        return {"issues": issues, "verdict": verdict}
+        for item in (data.get("issues") or []):
+            if not isinstance(item, dict):
+                continue
+            summary = str(item.get("summary", "")).strip()
+            if not summary:
+                continue
+            issues.append({
+                "severity": str(item.get("severity", "med")).strip().lower() or "med",
+                "summary": summary,
+                "line": item.get("line", ""),
+                "fix": str(item.get("fix", "")).strip(),
+            })
+        return {
+            "issues": issues,
+            "verdict": str(data.get("verdict", "")).strip(),
+        }

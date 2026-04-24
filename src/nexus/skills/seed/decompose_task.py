@@ -1,5 +1,6 @@
 """Decompose a goal into an ordered task list."""
 
+import json
 import re
 
 from nexus.skills.base import Skill, SkillContext, llm_complete
@@ -18,30 +19,41 @@ class DecomposeTask(Skill):
         goal = inputs["goal"]
         context = inputs.get("context", "")
         system = (
-            "You turn goals into concrete task lists. Each task must be small "
-            "enough to complete in one sitting. Identify dependencies explicitly."
+            "You decompose goals into ordered task lists. Each task must be small "
+            "enough to finish in one sitting. Output ONLY valid JSON matching the "
+            "schema — no prose, no markdown fences, no keys outside the schema."
         )
         prompt = (
             f"Goal: {goal}\n"
             + (f"Context: {context}\n" if context else "")
-            + "\nDecompose. For EACH task, output:\n"
-            "N) TASK: <task>\n   DEPS: <none | task #s>\n   EFFORT: <S|M|L>"
+            + "\nOutput a JSON object with one key `tasks`, an array of objects, "
+            "each with these fields:\n"
+            '  "n": int (1-indexed step number)\n'
+            '  "task": string (the concrete task)\n'
+            '  "deps": string (comma-separated task #s this depends on, or "none")\n'
+            '  "effort": one of "S" | "M" | "L"\n'
+            "Produce 3-8 tasks."
         )
-        raw = llm_complete(ctx, system=system, prompt=prompt, max_tokens=900)
+        raw = llm_complete(
+            ctx, system=system, prompt=prompt, max_tokens=900, format="json"
+        )
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+        m = re.search(r"\{[\s\S]*\}", raw)
         tasks: list[dict] = []
-        blocks = re.split(r"\n(?=\d+\))", raw)
-        for b in blocks:
-            m = re.search(r"(\d+)\)\s*TASK:\s*(.+?)(?:\n|$)", b)
-            if not m:
-                continue
-            deps_m = re.search(r"DEPS:\s*(.+)", b)
-            eff_m = re.search(r"EFFORT:\s*([SML])", b)
-            tasks.append(
-                {
-                    "n": int(m.group(1)),
-                    "task": m.group(2).strip(),
-                    "deps": deps_m.group(1).strip() if deps_m else "none",
-                    "effort": eff_m.group(1) if eff_m else "M",
-                }
-            )
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                for i, t in enumerate(data.get("tasks", []) or [], 1):
+                    if not isinstance(t, dict):
+                        continue
+                    tasks.append(
+                        {
+                            "n": int(t.get("n", i)),
+                            "task": str(t.get("task", "")).strip(),
+                            "deps": str(t.get("deps", "none")).strip() or "none",
+                            "effort": str(t.get("effort", "M")).strip().upper()[:1] or "M",
+                        }
+                    )
+            except Exception:
+                pass
         return {"tasks": tasks}

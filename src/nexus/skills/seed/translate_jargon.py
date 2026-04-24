@@ -1,6 +1,6 @@
 """Translate technical jargon into plain language."""
 
-from nexus.skills.base import Skill, SkillContext, llm_complete
+from nexus.skills.base import Skill, SkillContext, llm_json
 
 
 class TranslateJargon(Skill):
@@ -16,30 +16,28 @@ class TranslateJargon(Skill):
         text = inputs["text"]
         reader = inputs.get("reader", "a smart non-expert")
         system = (
-            "You translate technical text into plain language. Keep meaning intact. "
-            "Extract a short glossary of terms you chose to keep + their plain meaning."
+            "You translate technical text into plain language. Keep meaning "
+            "intact. Extract a short glossary of essential terms with plain "
+            "meanings."
         )
-        prompt = (
-            f"Target reader: {reader}\n\nOriginal:\n{text}\n\n"
-            "Return:\nPLAIN:\n<plain-language version>\n\n"
-            "GLOSSARY:\nTERM: <term> -- PLAIN: <meaning>\n..."
+        schema = (
+            'Output JSON: {"plain":"the plain-language rewrite",'
+            '"glossary":[{"term":"original jargon","plain":"plain meaning"}, ...]}'
         )
-        raw = llm_complete(
-            ctx, system=system, prompt=prompt, max_tokens=len(text) + 500
+        prompt = f"Target reader: {reader}\n\nOriginal:\n{text}"
+        data = llm_json(
+            ctx, system=system, prompt=prompt, schema_hint=schema,
+            temperature=0.2, max_tokens=len(text) + 600,
+            default={"plain": "", "glossary": []},
         )
-        plain = raw
         glossary: list[dict] = []
-        if "PLAIN:" in raw:
-            after = raw.split("PLAIN:", 1)[1]
-            if "GLOSSARY:" in after:
-                plain, gblock = after.split("GLOSSARY:", 1)
-                for line in gblock.splitlines():
-                    if line.startswith("TERM:"):
-                        parts = line.split("--", 1)
-                        if len(parts) == 2:
-                            term = parts[0].replace("TERM:", "").strip()
-                            meaning = parts[1].replace("PLAIN:", "").strip()
-                            glossary.append({"term": term, "plain": meaning})
-            else:
-                plain = after
-        return {"plain": plain.strip(), "glossary": glossary}
+        for item in (data.get("glossary") or []):
+            if isinstance(item, dict):
+                term = str(item.get("term", "")).strip()
+                meaning = str(item.get("plain", "")).strip()
+                if term and meaning:
+                    glossary.append({"term": term, "plain": meaning})
+        return {
+            "plain": str(data.get("plain", "")).strip(),
+            "glossary": glossary,
+        }

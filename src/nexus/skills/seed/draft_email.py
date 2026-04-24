@@ -1,6 +1,6 @@
 """Draft an email from a brief."""
 
-from nexus.skills.base import Skill, SkillContext, llm_complete
+from nexus.skills.base import Skill, SkillContext, llm_json
 
 
 class DraftEmail(Skill):
@@ -26,19 +26,19 @@ class DraftEmail(Skill):
             "You draft emails for a busy founder. One clear ask per email. "
             "No filler, no 'I hope this finds you well'. Match the requested tone."
         )
+        schema = (
+            'Output JSON: {"subject":"email subject line","body":"email body text"}'
+        )
         prompt = (
             f"Draft an email. Recipient: {to or '(not specified)'}. "
-            f"Tone: {tone}. Length: {length}.\n\n"
-            f"Brief: {brief}\n\n"
-            "Return format exactly:\n"
-            "SUBJECT: <line>\n\nBODY:\n<body>"
+            f"Tone: {tone}. Length: {length}.\n\nBrief: {brief}"
         )
-        raw = llm_complete(ctx, system=system, prompt=prompt, max_tokens=600)
-        subject, body = "", raw.strip()
-        for line in raw.splitlines():
-            if line.lower().startswith("subject:"):
-                subject = line.split(":", 1)[1].strip()
-                break
-        if "BODY:" in raw:
-            body = raw.split("BODY:", 1)[1].strip()
-        return {"subject": subject, "body": body}
+        data = llm_json(
+            ctx, system=system, prompt=prompt, schema_hint=schema,
+            temperature=0.4, max_tokens=700,
+            default={"subject": "", "body": ""},
+        )
+        return {
+            "subject": str(data.get("subject", "")).strip(),
+            "body": str(data.get("body", "")).strip(),
+        }

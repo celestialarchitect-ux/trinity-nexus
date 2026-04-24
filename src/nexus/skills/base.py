@@ -157,3 +157,49 @@ def llm_complete(
             else:
                 content = content.split("<think>", 1)[0]
     return content.strip()
+
+
+def llm_json(
+    ctx: SkillContext,
+    *,
+    system: str,
+    prompt: str,
+    schema_hint: str = "",
+    temperature: float = 0.2,
+    max_tokens: int = 1024,
+    default: dict | None = None,
+) -> dict:
+    """Call the LLM in grammar-constrained JSON mode and return a parsed dict.
+
+    Small quantized models (qwen3:4b etc.) are unreliable at "output JSON"
+    instructions — they leak thinking into fields. This helper forces Ollama's
+    JSON grammar and robustly parses the result.
+
+    `schema_hint` is appended verbatim to the system prompt — use it to spell
+    out expected keys + value types. Returns `default` ({} if None) on parse
+    failure so callers never crash on malformed output.
+    """
+    import json as _json
+    import re as _re
+
+    full_system = system
+    if schema_hint:
+        full_system = system.rstrip() + "\n\n" + schema_hint.strip()
+    raw = llm_complete(
+        ctx,
+        system=full_system,
+        prompt=prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        format="json",
+    )
+    raw = _re.sub(r"^```(?:json)?\s*|\s*```$", "", (raw or "").strip(), flags=_re.MULTILINE)
+    m = _re.search(r"\{[\s\S]*\}", raw)
+    if m:
+        try:
+            parsed = _json.loads(m.group(0))
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return default if default is not None else {}

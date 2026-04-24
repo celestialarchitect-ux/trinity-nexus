@@ -1,9 +1,8 @@
 """Extract structured entities (people, orgs, dates, amounts) from unstructured text."""
 
 import json
-import re
 
-from nexus.skills.base import Skill, SkillContext, llm_complete
+from nexus.skills.base import Skill, SkillContext, llm_json
 
 
 class ExtractEntities(Skill):
@@ -18,31 +17,29 @@ class ExtractEntities(Skill):
     def execute(self, ctx: SkillContext, inputs: dict) -> dict:
         text = inputs["text"]
         types = inputs.get("types") or [
-            "people",
-            "organizations",
-            "locations",
-            "dates",
-            "amounts",
-            "urls",
-            "emails",
+            "people", "organizations", "locations", "dates",
+            "amounts", "urls", "emails",
         ]
+        default_shape = {t: [] for t in types}
         system = (
-            "You extract structured entities. Return VALID JSON only, no prose. "
-            "If an entity type has no matches, return empty list."
+            "You extract structured entities. If a type has no matches, return "
+            "an empty list for it."
         )
-        schema_hint = {t: [] for t in types}
-        prompt = (
-            f"Extract entities from the text. Return JSON matching this schema exactly:\n"
-            f"{json.dumps(schema_hint)}\n\n"
-            f"TEXT:\n{text}"
+        schema = (
+            "Output JSON with exactly these keys, each mapping to a list of strings:\n"
+            + json.dumps(default_shape)
         )
-        raw = llm_complete(
-            ctx, system=system, prompt=prompt, temperature=0.1, max_tokens=600
+        prompt = f"TEXT:\n{text}"
+        data = llm_json(
+            ctx, system=system, prompt=prompt, schema_hint=schema,
+            temperature=0.1, max_tokens=700,
+            default=default_shape,
         )
-        match = re.search(r"\{[\s\S]*\}", raw)
-        if not match:
-            return {"entities": schema_hint, "_raw": raw}
-        try:
-            return {"entities": json.loads(match.group(0))}
-        except Exception:
-            return {"entities": schema_hint, "_raw": raw}
+        entities: dict[str, list[str]] = {}
+        for t in types:
+            vals = data.get(t, [])
+            if isinstance(vals, list):
+                entities[t] = [str(v).strip() for v in vals if str(v).strip()]
+            else:
+                entities[t] = []
+        return {"entities": entities}

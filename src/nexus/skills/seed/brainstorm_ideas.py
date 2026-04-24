@@ -1,8 +1,6 @@
 """Generate N distinct ideas on a topic."""
 
-import re
-
-from nexus.skills.base import Skill, SkillContext, llm_complete
+from nexus.skills.base import Skill, SkillContext, llm_json
 
 
 class BrainstormIdeas(Skill):
@@ -20,29 +18,39 @@ class BrainstormIdeas(Skill):
         constraints = inputs.get("constraints", "")
         system = (
             "You generate distinct, non-redundant ideas. Each must be materially "
-            "different from the others — not variants. Rate each 1-10 for leverage."
+            "different from the others — not variants. Rate each 1-10 for leverage "
+            "(higher = bigger payoff per unit effort)."
+        )
+        schema = (
+            'Output JSON: {"ideas":[{"idea":"one-line idea","why":"one-line rationale",'
+            '"leverage":1-10}, ...]}\n'
+            "Exactly one key `ideas` at the top level. No prose."
         )
         prompt = (
             f"Topic: {topic}\n"
             + (f"Constraints: {constraints}\n" if constraints else "")
-            + f"\nGenerate {n} ideas. Format EACH as:\n"
-            "IDEA: <one-line idea>\nWHY: <one-line rationale>\nLEVERAGE: <1-10>\n---"
+            + f"\nGenerate {n} ideas as described."
         )
-        raw = llm_complete(
-            ctx, system=system, prompt=prompt, max_tokens=n * 100, temperature=0.8
+        data = llm_json(
+            ctx, system=system, prompt=prompt, schema_hint=schema,
+            temperature=0.8, max_tokens=n * 120,
+            default={"ideas": []},
         )
         ideas: list[dict] = []
-        for block in raw.split("---"):
-            idea_m = re.search(r"IDEA:\s*(.+)", block)
-            why_m = re.search(r"WHY:\s*(.+)", block)
-            lev_m = re.search(r"LEVERAGE:\s*(\d+)", block)
-            if idea_m:
-                ideas.append(
-                    {
-                        "idea": idea_m.group(1).strip(),
-                        "why": why_m.group(1).strip() if why_m else "",
-                        "leverage": int(lev_m.group(1)) if lev_m else 5,
-                    }
-                )
+        for item in (data.get("ideas") or []):
+            if not isinstance(item, dict):
+                continue
+            idea = str(item.get("idea", "")).strip()
+            if not idea:
+                continue
+            try:
+                lev = int(item.get("leverage", 5))
+            except (TypeError, ValueError):
+                lev = 5
+            ideas.append({
+                "idea": idea,
+                "why": str(item.get("why", "")).strip(),
+                "leverage": max(1, min(10, lev)),
+            })
         ideas.sort(key=lambda x: -x["leverage"])
         return {"ideas": ideas[:n]}

@@ -1,6 +1,6 @@
 """Rewrite text in plain, direct language."""
 
-from nexus.skills.base import Skill, SkillContext, llm_complete
+from nexus.skills.base import Skill, SkillContext, llm_json
 
 
 class RewriteClear(Skill):
@@ -16,26 +16,22 @@ class RewriteClear(Skill):
         text = inputs["text"]
         audience = inputs.get("audience", "a smart generalist")
         system = (
-            "Rewrite for clarity. Rules: active voice. Short sentences. "
-            "Kill jargon unless it is required. No hedging ('kind of', 'sort of'). "
-            "Keep the original facts."
+            "Rewrite for clarity. Rules: active voice. Short sentences. Kill "
+            "jargon unless required. No hedging ('kind of', 'sort of'). Keep "
+            "the original facts."
         )
-        prompt = (
-            f"Audience: {audience}\n\nOriginal:\n{text}\n\n"
-            "Return:\nREWRITTEN:\n<text>\n\nCHANGES:\n- <change>\n- <change>"
+        schema = (
+            'Output JSON: {"rewritten":"the rewritten text",'
+            '"changes":["what you changed and why", ...]}'
         )
-        raw = llm_complete(ctx, system=system, prompt=prompt, max_tokens=len(text) + 400)
-        rewritten = raw
-        changes: list[str] = []
-        if "REWRITTEN:" in raw:
-            rest = raw.split("REWRITTEN:", 1)[1]
-            if "CHANGES:" in rest:
-                rewritten, changes_block = rest.split("CHANGES:", 1)
-                changes = [
-                    ln.lstrip("- ").strip()
-                    for ln in changes_block.splitlines()
-                    if ln.lstrip().startswith("-")
-                ]
-            else:
-                rewritten = rest
-        return {"rewritten": rewritten.strip(), "changes": changes}
+        prompt = f"Audience: {audience}\n\nOriginal:\n{text}"
+        data = llm_json(
+            ctx, system=system, prompt=prompt, schema_hint=schema,
+            temperature=0.3, max_tokens=len(text) + 500,
+            default={"rewritten": "", "changes": []},
+        )
+        changes = [str(c).strip() for c in (data.get("changes") or []) if str(c).strip()]
+        return {
+            "rewritten": str(data.get("rewritten", "")).strip(),
+            "changes": changes,
+        }

@@ -1,6 +1,6 @@
 """Multi-step reasoning on a research question (no external tools, LLM-only)."""
 
-from nexus.skills.base import Skill, SkillContext, llm_complete
+from nexus.skills.base import Skill, SkillContext, llm_json
 
 
 class ResearchQuestion(Skill):
@@ -16,33 +16,28 @@ class ResearchQuestion(Skill):
         q = inputs["question"]
         ctx_text = inputs.get("context", "")
         system = (
-            "You answer hard questions. Think out loud. When you don't know, "
-            "say so and list what you'd need to know to decide. Flag assumptions."
+            "You answer hard questions rigorously. When you don't know, say so "
+            "and list what you'd need to know. Never bluff. Flag assumptions."
+        )
+        schema = (
+            'Output JSON: {"answer":"direct answer (1-3 sentences)",'
+            '"confidence":"low"|"medium"|"high","unknowns":["thing 1","thing 2"]}'
         )
         prompt = (
             f"Question: {q}\n"
             + (f"Context: {ctx_text}\n" if ctx_text else "")
-            + "\nRespond in this exact format:\n"
-            "REASONING: <3-6 bullets of thinking>\n\n"
-            "ANSWER: <direct answer>\n\n"
-            "CONFIDENCE: <low | medium | high>\n\n"
-            "UNKNOWNS:\n- <thing you'd need>\n- <thing you'd need>"
+            + "\nProduce the JSON answer."
         )
-        raw = llm_complete(
-            ctx, system=system, prompt=prompt, max_tokens=1000, temperature=0.3
+        data = llm_json(
+            ctx, system=system, prompt=prompt, schema_hint=schema,
+            temperature=0.3, max_tokens=1000,
+            default={"answer": "", "confidence": "medium", "unknowns": []},
         )
-        answer, conf, unknowns = "", 0.5, []
-        if "ANSWER:" in raw:
-            after = raw.split("ANSWER:", 1)[1]
-            answer = after.split("CONFIDENCE:")[0].strip()
-        if "CONFIDENCE:" in raw:
-            level = raw.split("CONFIDENCE:", 1)[1].split("\n", 1)[0].strip().lower()
-            conf = {"low": 0.3, "medium": 0.6, "high": 0.9}.get(level, 0.5)
-        if "UNKNOWNS:" in raw:
-            ublock = raw.split("UNKNOWNS:", 1)[1]
-            unknowns = [
-                ln.lstrip("- ").strip()
-                for ln in ublock.splitlines()
-                if ln.lstrip().startswith("-")
-            ]
-        return {"answer": answer or raw, "confidence": conf, "unknowns": unknowns}
+        conf_raw = str(data.get("confidence", "medium")).strip().lower()
+        conf = {"low": 0.3, "medium": 0.6, "high": 0.9}.get(conf_raw, 0.5)
+        unknowns = [str(u).strip() for u in (data.get("unknowns") or []) if str(u).strip()]
+        return {
+            "answer": str(data.get("answer", "")).strip(),
+            "confidence": conf,
+            "unknowns": unknowns,
+        }

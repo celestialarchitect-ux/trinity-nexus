@@ -1,6 +1,6 @@
 """Find holes in a plan — adversarial review."""
 
-from nexus.skills.base import Skill, SkillContext, llm_complete
+from nexus.skills.base import Skill, SkillContext, llm_json
 
 
 class CritiquePlan(Skill):
@@ -16,30 +16,26 @@ class CritiquePlan(Skill):
         plan = inputs["plan"]
         focus = inputs.get("focus", "")
         system = (
-            "You are an adversarial reviewer. Your only job is to find what's wrong. "
-            "No cheerleading. No 'overall strong plan'. Only: specific risks, "
-            "unpriced assumptions, physics violations, mis-sequenced dependencies. "
-            "Be specific. Cite the line of the plan you're attacking."
+            "You are an adversarial reviewer. Your only job is to find what's "
+            "wrong. No cheerleading. Only specific risks, unpriced assumptions, "
+            "physics violations, mis-sequenced dependencies. Be specific."
+        )
+        schema = (
+            'Output JSON: {"critique":"one paragraph - the single biggest flaw",'
+            '"risks":["specific risk 1","specific risk 2", ...]}'
         )
         prompt = (
             f"Plan:\n{plan}\n\n"
             + (f"Focus the critique on: {focus}\n\n" if focus else "")
-            + "Return:\n"
-            "CRITIQUE: <one paragraph — the single most important flaw>\n\n"
-            "RISKS:\n- <risk 1>\n- <risk 2>\n- ..."
+            + "Attack this plan."
         )
-        raw = llm_complete(
-            ctx, system=system, prompt=prompt, max_tokens=900, temperature=0.3
+        data = llm_json(
+            ctx, system=system, prompt=prompt, schema_hint=schema,
+            temperature=0.3, max_tokens=900,
+            default={"critique": "", "risks": []},
         )
-        critique = ""
-        risks: list[str] = []
-        if "CRITIQUE:" in raw:
-            critique = raw.split("CRITIQUE:", 1)[1].split("RISKS:")[0].strip()
-        if "RISKS:" in raw:
-            risks_block = raw.split("RISKS:", 1)[1]
-            risks = [
-                ln.lstrip("- ").strip()
-                for ln in risks_block.splitlines()
-                if ln.lstrip().startswith("-")
-            ]
-        return {"critique": critique or raw, "risks": risks}
+        risks = [str(r).strip() for r in (data.get("risks") or []) if str(r).strip()]
+        return {
+            "critique": str(data.get("critique", "")).strip(),
+            "risks": risks,
+        }

@@ -1,8 +1,6 @@
 """Evaluate 2-N options across dimensions, produce a recommendation."""
 
-import re
-
-from nexus.skills.base import Skill, SkillContext, llm_complete
+from nexus.skills.base import Skill, SkillContext, llm_json
 
 
 class CompareOptions(Skill):
@@ -23,31 +21,41 @@ class CompareOptions(Skill):
         dims = inputs.get("dimensions") or ["cost", "speed", "risk", "leverage"]
         context = inputs.get("context", "")
         system = (
-            "You make sharp recommendations. Score each option 1-10 per dimension. "
-            "Then pick one. Your pick must be defensible in one sentence."
+            "You make sharp decisions. For each option, score every dimension 1-10. "
+            "Pick one option. The pick must be defensible in one sentence."
+        )
+        schema = (
+            'Output JSON: {"scores":[{"option":"...","per_dim":{"dim":score,...},"total":int}, ...],'
+            '"pick":"the chosen option","why":"one-sentence rationale"}'
         )
         prompt = (
-            f"Options:\n"
-            + "\n".join(f"- {o}" for o in options)
-            + f"\n\nDimensions: {', '.join(dims)}\n"
+            "Options:\n" + "\n".join(f"- {o}" for o in options)
+            + f"\n\nDimensions to score (1-10 each): {', '.join(dims)}\n"
             + (f"Context: {context}\n" if context else "")
-            + "\nFormat:\n"
-            "TABLE:\n| Option | "
-            + " | ".join(dims)
-            + " | Total |\n"
-            + "| --- | "
-            + " | ".join(["---"] * len(dims))
-            + " | --- |\n"
-            + "...\n\nPICK: <option>\nWHY: <one sentence>"
+            + "\nScore every option on every dimension, then pick one."
         )
-        raw = llm_complete(
-            ctx, system=system, prompt=prompt, max_tokens=700, temperature=0.2
+        data = llm_json(
+            ctx, system=system, prompt=prompt, schema_hint=schema,
+            temperature=0.2, max_tokens=900,
+            default={"scores": [], "pick": "", "why": ""},
         )
-        pick_m = re.search(r"PICK:\s*(.+)", raw)
-        why_m = re.search(r"WHY:\s*(.+)", raw)
-        table = raw.split("PICK:", 1)[0].replace("TABLE:", "").strip()
+
+        # Build a human-readable table from the scored options.
+        table_lines = ["| Option | " + " | ".join(dims) + " | Total |"]
+        table_lines.append("| --- | " + " | ".join(["---"] * len(dims)) + " | --- |")
+        for row in (data.get("scores") or []):
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("option", ""))
+            per = row.get("per_dim") or {}
+            cells = [str(per.get(d, "-")) for d in dims]
+            total = str(row.get("total", sum(
+                int(per.get(d, 0)) for d in dims if isinstance(per.get(d), (int, float))
+            )))
+            table_lines.append(f"| {name} | " + " | ".join(cells) + f" | {total} |")
+
         return {
-            "table": table,
-            "pick": pick_m.group(1).strip() if pick_m else "",
-            "why": why_m.group(1).strip() if why_m else "",
+            "table": "\n".join(table_lines),
+            "pick": str(data.get("pick", "")).strip(),
+            "why": str(data.get("why", "")).strip(),
         }
