@@ -8,9 +8,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from oracle.config import settings
-from oracle.memory.core import CoreMemory
-from oracle.memory.recall import RecallMemory
+from nexus.config import settings
+from nexus.memory.core import CoreMemory
+from nexus.memory.recall import RecallMemory
 
 
 def _ollama_up() -> bool:
@@ -56,7 +56,7 @@ def test_recall_log_and_search(oracle_home):
 
 @pytest.mark.skipif(not _ollama_up(), reason="Ollama not reachable")
 def test_archival_store_and_query(oracle_home):
-    from oracle.memory.archival import ArchivalMemory
+    from nexus.memory.archival import ArchivalMemory
 
     am = ArchivalMemory()
     assert am.count() == 0

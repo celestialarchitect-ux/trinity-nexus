@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from oracle.distillation.eval import (
+from nexus.distillation.eval import (
     EvalCase,
     _parse_compare,
     _parse_judge,

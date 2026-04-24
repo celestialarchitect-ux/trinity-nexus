@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from oracle.config import settings
-from oracle.skills import SkillRegistry, SkillRouter
+from nexus.config import settings
+from nexus.skills import SkillRegistry, SkillRouter
 
 
 def _ollama_up() -> bool:

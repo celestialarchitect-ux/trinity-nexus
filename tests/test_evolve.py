@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from oracle.skills.evolve import _extract_code, _guess_inputs, _syntactic_check
+from nexus.skills.evolve import _extract_code, _guess_inputs, _syntactic_check
 
 
 def test_extract_code_from_python_block():
@@ -19,7 +19,7 @@ def test_extract_code_from_generic_block():
 
 def test_syntactic_check_ok():
     code = '''
-from oracle.skills.base import Skill, SkillContext
+from nexus.skills.base import Skill, SkillContext
 
 class Ok(Skill):
     id = "ok"

@@ -14,14 +14,14 @@ def oracle_home(tmp_path: Path, monkeypatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("ORACLE_HOME", str(home))
     import importlib
-    from oracle import config as cfg_mod
+    from nexus import config as cfg_mod
 
     importlib.reload(cfg_mod)
     # Memory/retrieval modules bind `settings` at import time — reload them
     # so their default paths resolve against the tmp ORACLE_HOME.
-    from oracle.memory import archival, core, embeddings, recall, tiers
-    from oracle.retrieval import index as retrieval_index
-    from oracle.retrieval import ingest as retrieval_ingest
+    from nexus.memory import archival, core, embeddings, recall, tiers
+    from nexus.retrieval import index as retrieval_index
+    from nexus.retrieval import ingest as retrieval_ingest
 
     for m in (
         core, recall, archival, embeddings, tiers,

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from oracle.distillation.collector import Interaction, InteractionCollector
-from oracle.distillation.validator import AdapterValidator
+from nexus.distillation.collector import Interaction, InteractionCollector
+from nexus.distillation.validator import AdapterValidator
 
 
 def test_collector_round_trip(oracle_home, tmp_path):

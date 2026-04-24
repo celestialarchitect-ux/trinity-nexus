@@ -11,10 +11,10 @@ def test_keygen_and_sign_verify_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("ORACLE_HOME", str(tmp_path))
     # Reload config so ORACLE_HOME takes effect
     import importlib
-    from oracle import config as cfg
+    from nexus import config as cfg
     importlib.reload(cfg)
     # Reload mesh modules that bound settings at import time
-    from oracle.mesh import identity as ident_mod
+    from nexus.mesh import identity as ident_mod
     importlib.reload(ident_mod)
 
     ident = ident_mod.new_identity(label="test-node")
@@ -30,10 +30,10 @@ def test_keygen_and_sign_verify_roundtrip(tmp_path, monkeypatch):
 def test_bundle_verification_rejects_untrusted_producer(tmp_path, monkeypatch):
     monkeypatch.setenv("ORACLE_HOME", str(tmp_path))
     import importlib
-    from oracle import config as cfg
+    from nexus import config as cfg
     importlib.reload(cfg)
-    from oracle.mesh import identity as ident_mod
-    from oracle.mesh import sync as sync_mod
+    from nexus.mesh import identity as ident_mod
+    from nexus.mesh import sync as sync_mod
     importlib.reload(ident_mod)
     importlib.reload(sync_mod)
 
@@ -54,10 +54,10 @@ def test_bundle_verification_rejects_untrusted_producer(tmp_path, monkeypatch):
 def test_bundle_with_trusted_producer_installs(tmp_path, monkeypatch):
     monkeypatch.setenv("ORACLE_HOME", str(tmp_path))
     import importlib
-    from oracle import config as cfg
+    from nexus import config as cfg
     importlib.reload(cfg)
-    from oracle.mesh import identity as ident_mod
-    from oracle.mesh import sync as sync_mod
+    from nexus.mesh import identity as ident_mod
+    from nexus.mesh import sync as sync_mod
     importlib.reload(ident_mod)
     importlib.reload(sync_mod)
 
@@ -65,7 +65,7 @@ def test_bundle_with_trusted_producer_installs(tmp_path, monkeypatch):
     ident_mod.add_peer(pubkey_b64=ident.pubkey_b64, label="producer", url="http://x")
 
     code = '''\
-from oracle.skills.base import Skill, SkillContext
+from nexus.skills.base import Skill, SkillContext
 
 
 class MeshEcho(Skill):
@@ -103,10 +103,10 @@ class MeshEcho(Skill):
 def test_bundle_with_tampered_code_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv("ORACLE_HOME", str(tmp_path))
     import importlib
-    from oracle import config as cfg
+    from nexus import config as cfg
     importlib.reload(cfg)
-    from oracle.mesh import identity as ident_mod
-    from oracle.mesh import sync as sync_mod
+    from nexus.mesh import identity as ident_mod
+    from nexus.mesh import sync as sync_mod
     importlib.reload(ident_mod)
     importlib.reload(sync_mod)
 
@@ -116,7 +116,7 @@ def test_bundle_with_tampered_code_rejected(tmp_path, monkeypatch):
     ms = sync_mod.MeshSkill(
         id="x",
         file_hash="sha256:deadbeef",  # wrong hash
-        code="from oracle.skills.base import Skill, SkillContext\n\nclass X(Skill):\n    id='x'\n    def execute(self,ctx,i):return {}",
+        code="from nexus.skills.base import Skill, SkillContext\n\nclass X(Skill):\n    id='x'\n    def execute(self,ctx,i):return {}",
     )
     bundle = sync_mod.SkillBundle(
         bundle_id="b1",

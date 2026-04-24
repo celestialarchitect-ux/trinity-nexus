@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from oracle.config import settings
-from oracle.retrieval.ingest import _chunk
+from nexus.config import settings
+from nexus.retrieval.ingest import _chunk
 
 
 def _ollama_up() -> bool:
@@ -34,7 +34,7 @@ def test_chunk_long_text_with_overlap():
 
 @pytest.mark.skipif(not _ollama_up(), reason="Ollama needed for embedder")
 def test_ingest_and_query_roundtrip(oracle_home, tmp_path):
-    from oracle.retrieval import ingest_directory, RetrievalIndex
+    from nexus.retrieval import ingest_directory, RetrievalIndex
 
     d = tmp_path / "notes"
     d.mkdir()

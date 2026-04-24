@@ -1,10 +1,10 @@
 [project]
-name = "oracle"
-version = "0.1.0"
-description = "Oracle — sovereign personal AI prototype (Trinity Command)"
+name = "trinity-nexus"
+version = "1.0.0"
+description = "Trinity Nexus — sovereign adaptive intelligence (Omega Foundation)"
 requires-python = ">=3.12"
 readme = "README.md"
-authors = [{ name = "Zach Kalahiki / Trinity Command" }]
+authors = [{ name = "Trinity Intelligence Network" }]
 
 dependencies = [
     # LLM + orchestration
@@ -60,7 +60,8 @@ mesh = [
 ]
 
 [project.scripts]
-oracle = "oracle.cli:cli"
+nexus = "nexus.cli:cli"
+oracle = "nexus.cli:cli"  # legacy alias
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
