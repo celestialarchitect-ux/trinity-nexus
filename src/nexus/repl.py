@@ -407,16 +407,55 @@ def _handle_model(args: list[str], console: Console) -> None:
 
 
 def _handle_frontier(args: list[str], console: Console) -> None:
-    """/frontier <provider> <model> [api_key] — configure the frontier backend."""
+    """/frontier [test|<provider> [model] [key=...]]"""
     import os as _os
 
     if not args:
-        console.print("[yellow]usage: /frontier <provider> [model] [key=...][/]")
+        console.print("[yellow]usage:[/]")
+        console.print("  [dim]/frontier test                     ping the configured provider[/]")
+        console.print("  [dim]/frontier <provider> [model] [key=...]   configure[/]")
         console.print(
             "[dim]providers: openrouter, openai, deepseek, groq, together, "
             "fireworks, xai, mistral[/]"
         )
         return
+
+    # /frontier test
+    if args[0].lower() == "test":
+        from nexus.runtime import get_backend as _gb
+        from nexus.runtime.types import ChatRequest as _CR, Message as _M
+        import time as _t
+
+        key = _os.environ.get("NEXUS_FRONTIER_PROVIDER") or "frontier"
+        be = _gb(key)
+        if not be.is_available():
+            console.print(
+                "[red]frontier unavailable[/] — set NEXUS_FRONTIER_API_KEY first "
+                "(via .env or /frontier <provider> key=...)"
+            )
+            return
+        console.print(f"[dim]ping · provider={key} · model={getattr(be, 'default_model', '?')}[/]")
+        req = _CR(
+            messages=[
+                _M(role="system", content="Be terse."),
+                _M(role="user", content="Reply in one sentence: what is 2+2?"),
+            ],
+            model="",
+            temperature=0.2,
+            num_ctx=4096,
+            max_tokens=60,
+        )
+        t0 = _t.perf_counter()
+        try:
+            resp = be.chat(req)
+        except Exception as e:
+            console.print(f"[red]FAIL[/] {type(e).__name__}: {e}")
+            return
+        dt = _t.perf_counter() - t0
+        console.print(f"[#7cffb0]OK[/] {dt:.1f}s · {resp.prompt_tokens}+{resp.completion_tokens} tokens")
+        console.print(f"[dim]→[/] {(resp.content or '').strip()[:240]}")
+        return
+
     provider = args[0].lower()
     _os.environ["NEXUS_FRONTIER_PROVIDER"] = provider
     if len(args) >= 2 and not args[1].startswith("key="):
@@ -426,9 +465,9 @@ def _handle_frontier(args: list[str], console: Console) -> None:
             _os.environ["NEXUS_FRONTIER_API_KEY"] = a.split("=", 1)[1]
     # Clear cached backend so next use picks up new env
     from nexus.runtime import _BACKENDS
-    _BACKENDS.pop("frontier", None)
-    _BACKENDS.pop("openai_compat", None)
-    _BACKENDS.pop(provider, None)
+    for k in list(_BACKENDS.keys()):
+        if k in {"frontier", "openai_compat", provider}:
+            _BACKENDS.pop(k, None)
     console.print(
         f"[#7cffb0]frontier →[/] provider={provider} "
         f"model={_os.environ.get('NEXUS_FRONTIER_MODEL', '(preset default)')}"

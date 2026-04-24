@@ -202,6 +202,103 @@ def chat(thread: str):
     run_repl(console=console, thread=thread)
 
 
+@cli.group()
+def frontier():
+    """Test + list frontier API backends (Claude / GPT / Gemini / DeepSeek / ...)."""
+
+
+@frontier.command("test")
+@click.option("--provider", default=None, help="openrouter|anthropic|openai|deepseek|groq|xai|mistral|together|fireworks")
+@click.option("--model", default=None, help="override default model for this call")
+@click.option("--prompt", default="Reply in one sentence: what is 2+2?", help="test prompt")
+def frontier_test(provider, model, prompt):
+    """Send a tiny ping to the configured frontier provider. Fails fast if something's off."""
+    import os as _os
+    from nexus.runtime import get_backend
+    from nexus.runtime.types import ChatRequest, Message
+
+    key = provider or _os.environ.get("NEXUS_FRONTIER_PROVIDER") or "frontier"
+    be = get_backend(key)
+
+    if not be.is_available():
+        console.print(
+            "[red]frontier unavailable[/] — NEXUS_FRONTIER_API_KEY is not set"
+        )
+        console.print(
+            "[dim]edit .env and set NEXUS_FRONTIER_PROVIDER + NEXUS_FRONTIER_API_KEY, or use `/frontier` in the REPL[/]"
+        )
+        return
+
+    console.print(f"[dim]provider={key} · model={model or getattr(be, 'default_model', '?')}[/]")
+    req = ChatRequest(
+        messages=[
+            Message(role="system", content="Be terse."),
+            Message(role="user", content=prompt),
+        ],
+        model=model or "",
+        temperature=0.2,
+        num_ctx=4096,
+        max_tokens=100,
+    )
+    try:
+        t0 = time.perf_counter()
+        resp = be.chat(req)
+        dt = time.perf_counter() - t0
+    except Exception as e:
+        console.print(f"[red]FAIL[/] {type(e).__name__}: {e}")
+        return
+    console.print(
+        f"[#7cffb0]OK[/] {dt:.1f}s  · {resp.prompt_tokens}+{resp.completion_tokens} tokens"
+    )
+    console.print(Markdown(resp.content or "_(empty response)_"))
+
+
+@frontier.command("models")
+@click.option("--provider", default=None)
+def frontier_models(provider):
+    """List models exposed by the configured frontier provider's /models endpoint."""
+    import os as _os
+
+    import httpx as _httpx
+
+    from nexus.runtime.backends.openai_compat import OpenAICompatBackend, PROVIDER_PRESETS
+
+    be = OpenAICompatBackend(
+        provider=provider or _os.environ.get("NEXUS_FRONTIER_PROVIDER")
+    )
+    if not be.is_available():
+        console.print("[red]NEXUS_FRONTIER_API_KEY not set[/]")
+        return
+    try:
+        r = _httpx.get(
+            f"{be.base_url}/models",
+            headers=be._headers(),
+            timeout=30.0,
+        )
+        r.raise_for_status()
+    except Exception as e:
+        console.print(f"[red]FAIL[/] {e}")
+        return
+
+    data = r.json().get("data") or r.json().get("models") or []
+    if not data:
+        console.print("[yellow]no models returned[/]")
+        return
+    t = Table(title=f"models at {be.base_url}")
+    t.add_column("id", style="cyan")
+    t.add_column("context", justify="right")
+    t.add_column("price/1M in", justify="right")
+    t.add_column("price/1M out", justify="right")
+    for m in data[:200]:
+        mid = m.get("id") or m.get("name") or ""
+        ctx = m.get("context_length") or m.get("context_window") or ""
+        pricing = m.get("pricing") or {}
+        pin = pricing.get("prompt", "")
+        pout = pricing.get("completion", "")
+        t.add_row(str(mid), str(ctx), str(pin), str(pout))
+    console.print(t)
+
+
 @cli.command()
 def mcp():
     """Run Oracle as an MCP server over stdio (for Claude Desktop / Cursor)."""
