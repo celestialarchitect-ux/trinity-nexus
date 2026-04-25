@@ -54,9 +54,13 @@ class Settings(BaseSettings):
     oracle_ollama_host: str = Field(default="http://localhost:11434")
     oracle_num_ctx: int = Field(default=16384)
     oracle_llm_timeout_sec: float = Field(default=600.0)
-    # Embedder keep_alive passed to Ollama. "0s" = unload after each call
-    # (good for 24GB GPUs running a big primary). "5m" = default hot.
-    oracle_embed_keepalive: str = Field(default="5m")
+    # Embedder keep_alive passed to Ollama. "-1" = pin in VRAM forever
+    # (the right call when there's headroom — bge-m3 is only ~1.2GB and
+    # gets called on every turn for memory retrieval; eviction adds
+    # multi-second retries per turn). "0s" = unload immediately (only
+    # right when the primary needs every GB). "5m" = old default; was
+    # silently letting Ollama evict mid-session and tank latency.
+    oracle_embed_keepalive: str = Field(default="-1")
     # Primary model keep_alive. "-1" = never unload (pin in VRAM). Measured
     # with qwen3:4b on RTX 4090: keep_alive="-1" gives 0.1s warm calls,
     # the default "5m" gave 60s reloads between turns in our env.

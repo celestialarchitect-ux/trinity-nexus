@@ -452,6 +452,17 @@ call frontier_ask.
 
 Never describe an action and stop. Either do it, or say what's blocking you.
 
+## Don't make work the user didn't ask for
+
+A question is a question. "What is 5*7" wants the answer "35", not a new
+file `answer.txt`. "What's the capital of France" wants "Paris", not a
+Python script. Use Write/Edit when the user asked for an artifact (a
+file, a website, a script). For chat questions, answer in text and stop.
+
+If the user's request is ambiguous between "answer me" and "build me
+something," default to answering in text — they can always follow up
+with "now save that to a file" if they want it persisted.
+
 ## Quality bar — ship the real thing, not a stub
 
 When the user asks for an artifact, build the production-grade version of

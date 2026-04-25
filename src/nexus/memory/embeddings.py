@@ -30,8 +30,15 @@ class Embedder:
     def __init__(self, model: str | None = None, host: str | None = None):
         self.model = model or settings.oracle_embed_model
         self.host = host or settings.oracle_ollama_host
-        self._client = httpx.Client(timeout=30.0)
+        # 4s, not 30s: every turn embeds the user prompt + retrieval queries.
+        # Healthy bge-m3 returns in <1s. When Ollama is stuck loading the
+        # embedder (seen on this Windows + RTX 4090 + co-resident gpt-oss:20b
+        # at 16K), the request never completes — we'd rather give up fast
+        # and use the zero-vector fallback than block the user.
+        self._client = httpx.Client(timeout=4.0)
         self._dim: int | None = None  # learned on first success
+        self._consecutive_failures = 0
+        self._tripped = False  # circuit-breaker: skip calls once we've given up
 
     def _call(self, text: str, *, keep_alive: str) -> tuple[float, ...] | None:
         try:
@@ -41,6 +48,14 @@ class Embedder:
                     "model": self.model,
                     "prompt": text,
                     "keep_alive": keep_alive,
+                    # Pin to bge-m3's training context. Ollama otherwise
+                    # silently applies a global default num_ctx (observed:
+                    # 32768) to the embedder load, which triggers
+                    # "requested context size too large for model" and
+                    # makes the load process hang waiting for an oversized
+                    # KV cache that never materializes. 8192 = bge-m3's
+                    # actual n_ctx_train.
+                    "options": {"num_ctx": 8192},
                 },
             )
             if r.status_code >= 400:
@@ -54,26 +69,35 @@ class Embedder:
 
     @functools.lru_cache(maxsize=4096)
     def _embed_cached(self, text_hash: str, text: str) -> tuple[float, ...]:
+        # Circuit breaker: once tripped, return zero vectors for the rest of
+        # the session without calling Ollama. Avoids a full retry-storm on
+        # every turn when the embedder is wedged. Process restart resets it.
+        if self._tripped:
+            return tuple([0.0] * (self._dim or _DIM_FALLBACK))
+
         # First try with the configured keep_alive.
         vec = self._call(text, keep_alive=settings.oracle_embed_keepalive)
         if vec:
+            self._consecutive_failures = 0
             return vec
 
-        # Retry once with keep_alive=0s — forces Ollama to unload and reload
-        # the embedder cleanly, which recovers from VRAM-allocation failures.
-        logger.warning(
-            "embedder %s returned error; retrying with keep_alive=0s", self.model
-        )
-        time.sleep(0.3)
-        vec = self._call(text, keep_alive="0s")
-        if vec:
-            return vec
-
-        # Both failed. Return a zero-vector so the agent can continue —
-        # archival queries degrade to "no hits" instead of crashing the turn.
-        logger.error(
-            "embedder %s unavailable after retry; returning zero vector", self.model
-        )
+        # First failure: trip the breaker immediately and return zero
+        # vector. Skipping the previous retry-with-keep_alive=0s because
+        # when Ollama is stuck loading bge-m3 (the failure mode this
+        # circuit breaker exists for), the retry just costs another full
+        # timeout window without improving anything. Process restart
+        # resets the breaker — a recovered Ollama gets re-tested cleanly
+        # next session.
+        self._consecutive_failures += 1
+        if not self._tripped:
+            logger.error(
+                "embedder %s unavailable; tripped circuit breaker. Returning "
+                "zero vectors for the rest of this session — retrieval is "
+                "degraded but the agent will continue. Restart `nexus` once "
+                "Ollama recovers to retry.",
+                self.model,
+            )
+            self._tripped = True
         dim = self._dim or _DIM_FALLBACK
         return tuple([0.0] * dim)
 
