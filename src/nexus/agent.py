@@ -484,7 +484,10 @@ class Oracle:
             {"messages": self._seed_messages(prompt)}, self.config
         )
         last = final["messages"][-1]
-        answer = last.content if isinstance(last, AIMessage) else str(last)
+        raw_answer = last.content if isinstance(last, AIMessage) else str(last)
+
+        from nexus._llm_util import strip_think
+        answer = strip_think(raw_answer) if isinstance(raw_answer, str) else raw_answer
 
         self.memory.log_turn(role="assistant", content=answer, thread_id=self.thread_id)
         _sessions.log(self.thread_id, "assistant", content=answer)

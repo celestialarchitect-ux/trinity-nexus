@@ -1,6 +1,6 @@
-"""Oracle CLI — terminal-native sovereign AI.
+"""Trinity Nexus CLI — terminal-native sovereign AI.
 
-Type `oracle` (no args) to boot the interactive REPL.
+Type `nexus` (no args) to boot the interactive REPL.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ def upgrade():
 @cli.command()
 @click.option("--branch", default="main", help="Git branch to pull from.")
 def update(branch: str):
-    """Pull the latest Oracle from git and reinstall in-place."""
+    """Pull the latest Trinity Nexus from git and reinstall in-place."""
     import subprocess as _sub
     from pathlib import Path as _P
     import sys as _sys
@@ -139,7 +139,7 @@ def update(branch: str):
         return
     if _run([_sys.executable, "-m", "pip", "install", "-q", "-e", "."]) != 0:
         return
-    console.print("[#7cffb0]oracle updated[/]")
+    console.print("[#7cffb0]nexus updated[/]")
 
 
 @cli.command()
@@ -150,7 +150,7 @@ def doctor():
     from nexus.skills import SkillRegistry
     from nexus.sandbox import DockerSandbox
 
-    table = Table(title="Oracle — environment check", show_header=True)
+    table = Table(title="Trinity Nexus — environment check", show_header=True)
     table.add_column("Check", style="cyan")
     table.add_column("Result")
 
@@ -274,7 +274,7 @@ def ask(prompt, thread: str | None, stream: bool, frontier: bool):
 @cli.command()
 @click.option("--thread", default="default")
 def chat(thread: str):
-    """Interactive chat with Oracle — same REPL you get from `oracle`."""
+    """Interactive chat with Trinity Nexus — same REPL you get from `nexus`."""
     from nexus.repl import run_repl
 
     run_repl(console=console, thread=thread)
@@ -475,7 +475,7 @@ def replay(thread_id: str, limit: int):
 
 @cli.command()
 def mcp():
-    """Run Oracle as an MCP server over stdio (for Claude Desktop / Cursor)."""
+    """Run Trinity Nexus as an MCP server over stdio (for Claude Desktop / Cursor)."""
     from nexus.mcp_server import run_stdio
 
     run_stdio()
@@ -488,16 +488,16 @@ def mcp():
     help="Merge into %APPDATA%/Claude/claude_desktop_config.json on Windows.",
 )
 def mcp_config(write: bool):
-    """Emit the Claude Desktop config snippet to hook Oracle as an MCP server."""
+    """Emit the Claude Desktop config snippet to hook Trinity Nexus as an MCP server."""
     import os
     import sys
     from pathlib import Path as _P
 
     venv_py = _P(sys.executable)
     snippet = {
-        "oracle": {
+        "trinity-nexus": {
             "command": str(venv_py),
-            "args": ["-m", "oracle.cli", "mcp"],
+            "args": ["-m", "nexus.cli", "mcp"],
             "cwd": str(_P(__file__).resolve().parents[2]),
         }
     }
@@ -597,7 +597,7 @@ def skill_route(intent):
 @click.argument("skill_id")
 @click.argument("inputs_json")
 def skill_run(skill_id: str, inputs_json: str):
-    """Run a skill directly: oracle skill run summarize_text '{\"text\":\"...\"}'"""
+    """Run a skill directly: nexus skill run summarize_text '{\"text\":\"...\"}'"""
     import ollama
 
     from nexus.memory import MemoryTiers
@@ -719,7 +719,7 @@ def mesh_id():
 
     ident = load_identity()
     if not ident:
-        console.print("[red]no identity[/] — run `oracle mesh keygen` first")
+        console.print("[red]no identity[/] — run `nexus mesh keygen` first")
         return
     console.print(f"label: [cyan]{ident.label}[/]")
     console.print(f"pubkey: {ident.pubkey_b64}")
@@ -908,4 +908,4 @@ def distill(lookback_hours: int, dry_run: bool, train: bool):
 
 
 if __name__ == "__main__":
-    cli(prog_name="oracle")
+    cli(prog_name="nexus")

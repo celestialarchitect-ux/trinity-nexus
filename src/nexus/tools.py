@@ -1,7 +1,7 @@
-"""Built-in tools for the Oracle agent.
+"""Built-in tools for the Trinity Nexus agent.
 
 Mirrors Claude Code's tool set: file I/O, shell, glob/grep search, web fetch
-+ search, plus Oracle-specific memory tools. Stays tight (<20 tools) so the
++ search, plus Nexus-specific memory tools. Stays tight (<20 tools) so the
 model's tool-choice remains crisp.
 """
 
@@ -171,26 +171,56 @@ def _is_dangerous(cmd: str) -> str | None:
     return None
 
 
+def _find_bash() -> str | None:
+    """Locate a POSIX bash on Windows (git-bash, WSL, MSYS2). None if not found.
+
+    Checked in order:
+      1. $NEXUS_BASH override
+      2. $SHELL if it points at a bash
+      3. git-bash default install locations
+      4. `where bash` lookup on PATH
+    """
+    import shutil as _shutil
+
+    override = os.environ.get("NEXUS_BASH")
+    if override and Path(override).exists():
+        return override
+    sh = os.environ.get("SHELL", "")
+    if sh and sh.endswith("bash") and Path(sh).exists():
+        return sh
+    for candidate in (
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+        r"C:\Windows\System32\bash.exe",  # WSL
+    ):
+        if Path(candidate).exists():
+            return candidate
+    return _shutil.which("bash")
+
+
 @tool("Bash")
 def run_command(command: str, timeout_sec: int = 30) -> dict[str, Any]:
-    """Run a shell command. Use for "run/execute/test/install/build" requests.
+    """Run a bash command. Use for "run/execute/test/install/build" requests.
 
     Returns {"stdout": str, "stderr": str, "returncode": int}. stdout is
     truncated to the last 4000 chars, stderr to the last 2000 — pipe to a file
-    + read_file if you need full output.
+    + Read if you need full output.
 
     Args:
-        command: full shell command line. Quoting and escaping are your
-                 responsibility. Runs through `cmd.exe` on Windows, `sh` on Unix.
+        command: full bash command line. Quoting and escaping are your
+                 responsibility. On Unix runs through `sh`; on Windows runs
+                 through git-bash / WSL bash if available, otherwise cmd.exe
+                 (override location via NEXUS_BASH).
         timeout_sec: kill after this many seconds (default 30).
 
     Use cases:
-        run_command("pytest -x")              — run tests
-        run_command("python script.py")       — execute a script
-        run_command("npm install")            — install deps
-        run_command("git status")             — read repo state
-        run_command("dir" / "ls -la")         — list a directory
-        run_command("python -c 'print(2+2)'") — quick eval
+        Bash("pytest -x")              — run tests
+        Bash("python script.py")       — execute a script
+        Bash("npm install")            — install deps
+        Bash("git status")             — read repo state
+        Bash("ls -la")                 — list a directory
+        Bash("python -c 'print(2+2)'") — quick eval
 
     Destructive patterns (rm -rf, format, fdisk, dd, etc.) need confirmation
     or NEXUS_ALLOW_DANGEROUS=1 / `/dangerous on`.
@@ -242,10 +272,26 @@ def run_command(command: str, timeout_sec: int = 30) -> dict[str, Any]:
                 "returncode": -3,
             }
     _sec.audit("run_command", command=command)
+    # On Windows, prefer bash if available so "ls"/"grep"/"cat" etc. work as
+    # the model expects. Falls back to shell=True (cmd.exe) if no bash found.
     try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=timeout_sec,
-        )
+        if os.name == "nt":
+            bash = _find_bash()
+            if bash:
+                # `-c`, not `-lc`: skip login profile (.bash_profile can be
+                # slow enough to exhaust the default 30s timeout on Windows).
+                result = subprocess.run(
+                    [bash, "-c", command],
+                    capture_output=True, text=True, timeout=timeout_sec,
+                )
+            else:
+                result = subprocess.run(
+                    command, shell=True, capture_output=True, text=True, timeout=timeout_sec,
+                )
+        else:
+            result = subprocess.run(
+                command, shell=True, capture_output=True, text=True, timeout=timeout_sec,
+            )
         return {
             "stdout": result.stdout[-4000:],
             "stderr": result.stderr[-2000:],
