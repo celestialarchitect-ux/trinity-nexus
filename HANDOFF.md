@@ -1,7 +1,7 @@
 # Trinity Nexus — Handoff
 
 > Read first. This is the canonical state-of-system for any human or AI
-> picking up the project. Current as of v1.0.8.
+> picking up the project. Current as of v1.0.27.
 
 ## What Trinity Nexus is
 
@@ -13,7 +13,31 @@ constitution (`src/nexus/prompts.py :: TRINITY_NEXUS_CONSTITUTION`).
 - Repo: https://github.com/celestialarchitect-ux/trinity-nexus
 - PyPI: https://pypi.org/project/trinity-nexus/
 - License: MIT
-- Current: v1.0.8 · 80/80 tests green
+- Current: v1.0.27 · 95/95 tests green
+
+## What changed since v1.0.8
+
+The middle releases were almost entirely about closing the Claude Code gap:
+
+- **v1.0.9–v1.0.14** Streaming + perf: state-machine fix, segment buffers,
+  resilient embedder, bounded checkpoints, one-shot ask threads, primary
+  model pinned in VRAM (`keep_alive=-1`) — turn time 60s → 5s.
+- **v1.0.15** `recall_memory` tool — query archival memory directly.
+- **v1.0.16–v1.0.21** Grammar-constrained JSON for skills, `<think>`-tag
+  stripping, JSON mode for reflect (kills silent hallucination writes),
+  `/modes` alias.
+- **v1.0.22** 10 MB read limit + clean inline status (no toolbar smudge).
+- **v1.0.23** Frontier brain + tool-use directives — auto-route hard turns
+  to a stronger model. EXECUTION_DIRECTIVES live in the system prompt.
+- **v1.0.24** Smart routing + graceful fallback + tool docstring sweep.
+- **v1.0.25** Auto-escalate on refusal + word-boundary action detection.
+- **v1.0.26** Tools renamed to Claude-Code names (Read / Write / Edit /
+  Glob / Grep / Bash / WebFetch / WebSearch / Task). New TodoWrite tool
+  with the same shape Claude Code uses. Function names unchanged in
+  Python — only the `@tool` agent-facing names.
+- **v1.0.27** Quality bar in EXECUTION_DIRECTIVES — explicit anti-stub
+  guidance so prompts like "build me a website for X" produce a
+  production-grade artifact, not 15 lines of placeholder HTML.
 
 ## Install
 
@@ -45,12 +69,15 @@ nexus
 - Context compaction (manual + auto past threshold)
 - At-rest Fernet encryption via passphrase (§29.8)
 
-**Tools bound to the agent**
-- `read_file`, `write_file`, `edit_file`, `apply_diff`, `glob_paths`, `grep_files`
-- `run_command` (destructive-pattern gate, interactive y/N prompt, rate-limited)
-- `web_fetch`, `web_search` (DuckDuckGo; tainted output per §29.4)
-- `remember`, `retrieve_notes`, `retrieve_graph`
-- `spawn_agent`, `frontier_ask`, `browser_task` (optional, `.[browser]` extra)
+**Tools bound to the agent** (Claude-Code-style names since v1.0.26)
+- `Read`, `Write`, `Edit`, `ApplyDiff`, `Glob`, `Grep`
+- `Bash` (destructive-pattern gate, interactive y/N prompt, rate-limited)
+- `WebFetch`, `WebSearch` (DuckDuckGo; tainted output per §29.4)
+- `TodoWrite` (multi-step task tracker, "exactly one in_progress" invariant)
+- `remember`, `recall_memory`, `retrieve_notes`, `retrieve_graph`
+- `Task` (spawn_agent), `frontier_ask`, `browser_task` (optional, `.[browser]` extra)
+
+Underlying Python function names are unchanged — `from nexus.tools import read_file` still works. Only the `@tool` agent-facing surface was renamed to match what Claude was trained on.
 
 **Runtime**
 - `nexus.runtime` with pluggable backends:
