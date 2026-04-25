@@ -96,7 +96,18 @@ def _make_frontier_llm(model: str | None = None) -> BaseChatModel:
 
 
 def _make_local_llm(model: str | None = None) -> BaseChatModel:
-    """Build a local Ollama LangChain chat model (the sovereign brain)."""
+    """Build a local Ollama LangChain chat model (the sovereign brain).
+
+    Tuning notes:
+      - temperature=0.2: tool calling requires the model to commit to a single
+        function name + arg shape. High temp (was 0.7) makes the model wander
+        into prose like "I would call Bash('ls')" instead of actually emitting
+        the tool_call. Override via NEXUS_TEMPERATURE.
+      - num_ctx default lifted to max(16384, settings) for local Ollama: the
+        33-section constitution alone is ~6K tokens; with tool schemas + USER
+        MAP + memory + actual conversation an 8K window is starved on round 2.
+    """
+    import os as _os
     if model is None:
         try:
             from nexus.modes import preferred_model_for_active
@@ -112,11 +123,18 @@ def _make_local_llm(model: str | None = None) -> BaseChatModel:
     except (TypeError, ValueError):
         keep_alive = ka_raw
 
+    try:
+        temperature = float(_os.environ.get("NEXUS_TEMPERATURE", "0.2"))
+    except ValueError:
+        temperature = 0.2
+
+    num_ctx = max(16384, int(settings.oracle_num_ctx or 0))
+
     return ChatOllama(
         model=model or settings.oracle_primary_model,
         base_url=settings.oracle_ollama_host,
-        temperature=0.7,
-        num_ctx=settings.oracle_num_ctx,
+        temperature=temperature,
+        num_ctx=num_ctx,
         keep_alive=keep_alive,
         client_kwargs={"timeout": settings.oracle_llm_timeout_sec},
     ).bind_tools(_all_tools())
